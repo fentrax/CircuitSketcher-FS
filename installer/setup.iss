@@ -11,7 +11,7 @@
 ; - Deinstaller mit Eintrag in "Apps & Features"
 
 #define MyAppName "SchaltungsZeichner FS"
-#define MyAppVersion "1.3-FS"
+#define MyAppVersion "1.4-FS"
 #define MyAppPublisher "fentrax"
 #define MyAppExeName "SchaltungsZeichner-FS.exe"
 #define MyAppGuid "{B7C1D9A2-4E5F-4C6B-9A3D-1E2F3A4B5C6D}"
