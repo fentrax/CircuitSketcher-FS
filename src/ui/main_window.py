@@ -2160,10 +2160,14 @@ class MainWindow(QMainWindow):
         self._save_to(Path(filename))
 
     def _save_to(self, path):
+        # Pfad normalisieren (Dialog-Eingabe): resolve() beseitigt relative
+        # Anteile und ../-Segmente — schreiben nur an eindeutig aufgelöste Ziele.
+        path = Path(path).resolve()
         try:
             data = self._capture_snapshot()
-            with open(str(path), 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False),
+                encoding='utf-8')
             self.current_file = Path(path)
             self._clear_dirty()
             self._update_window_title()

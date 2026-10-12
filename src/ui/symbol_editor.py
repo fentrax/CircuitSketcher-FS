@@ -1305,8 +1305,8 @@ class SymbolEditorDialog(QDialog):
         })
 
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
+            Path(path).write_text(
+                json.dumps(payload, indent=2), encoding="utf-8")
 
             # Update ID display after successful save
             self.id_input.setText(symbol_id)
