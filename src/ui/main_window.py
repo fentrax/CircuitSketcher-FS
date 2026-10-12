@@ -4,7 +4,8 @@ Hauptfenster - Haupt-Anwendungsfenster
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                              QMenuBar, QMenu, QAction, QFileDialog, QMessageBox,
                              QToolBar, QPushButton, QLabel, QGraphicsItem, QCheckBox,
-                             QComboBox, QApplication, QShortcut, QScrollArea)
+                             QComboBox, QApplication, QShortcut, QScrollArea,
+                             QInputDialog)
 from PyQt5.QtCore import Qt, QPointF, QPoint, QLineF, QRectF
 from PyQt5.QtGui import QKeySequence, QImage, QPainter, QCursor, QColor
 from PyQt5.QtCore import QTimer
@@ -462,6 +463,11 @@ class MainWindow(QMainWindow):
             # Item wurde bereits gelöscht
             pass
         self.preview_component = None
+        # Sicherheitsnetz: frei gewordene Label-Texte mitkehren (früher
+        # blieben bei Vorschau-Rotationen Geister-Kopien in der Szene).
+        for item in list(self.canvas.scene.items()):
+            if getattr(item, "is_placeholder_text", False) and item.parentItem() is None:
+                self.canvas.scene.removeItem(item)
 
     def _on_mouse_left_canvas(self):
         """Maus hat den Zeichenbereich verlassen: Vorschau ausblenden.
@@ -2170,53 +2176,125 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Fehler", f"Speichern der Schaltung fehlgeschlagen: {str(e)}")
 
-    def export_png(self):
-        """Zeichenfläche als PNG exportieren - nur sichtbarer Bereich"""
-        filename, _ = QFileDialog.getSaveFileName(self, "Als PNG exportieren", "", "PNG Dateien (*.png)")
-        if filename:
-            try:
-                # Nur den sichtbaren Bereich exportieren
-                visible_rect = self.canvas.get_visible_scene_rect()
+    def export_png(self, filename=None, scale=2):
+        """Zeichenfläche als PNG exportieren - nur sichtbarer Bereich.
 
-                # Bild in der Größe des sichtbaren Bereichs erstellen
-                image = QImage(int(visible_rect.width()), int(visible_rect.height()),
-                             QImage.Format_ARGB32)
-                image.fill(Qt.white)
+        scale ist der Auflösungsfaktor (1 = Scene-Einheiten 1:1). Ohne
+        filename-Parameter (GUI-Aufruf) fragt ein kleiner Dialog den
+        Faktor ab; Tests können beides direkt übergeben.
+        """
+        if filename is None:
+            filename, _ = QFileDialog.getSaveFileName(self, "Als PNG exportieren", "", "PNG Dateien (*.png)")
+            if not filename:
+                return
+            scale, ok = QInputDialog.getInt(
+                self, "Auflösung",
+                "Auflösungsfaktor (1 = Standard, 2 = doppelte Pixelzahl je Achse):",
+                2, 1, 8, 1)
+            if not ok:
+                return
+        try:
+            # Nur den sichtbaren Bereich exportieren
+            visible_rect = self.canvas.get_visible_scene_rect()
 
-                # Szene auf Bild rendern - nur sichtbarer Bereich
-                painter = QPainter(image)
-                self.canvas.scene.render(painter, source=visible_rect)
-                painter.end()
+            # Zielbild: sichtbarer Bereich mal Auflösungsfaktor
+            width = max(1, int(visible_rect.width() * scale))
+            height = max(1, int(visible_rect.height() * scale))
+            image = QImage(width, height, QImage.Format_ARGB32)
+            image.fill(Qt.white)
 
-                # Bild speichern
-                image.save(filename)
+            # Szene auf Bild rendern - nur sichtbarer Bereich, skaliert
+            painter = QPainter(image)
+            self.canvas.scene.render(
+                painter,
+                QRectF(0, 0, width, height),
+                visible_rect)
+            painter.end()
+
+            # Bild speichern (Rückgabe prüfen: stillscheitender Export wäre
+            # sonst ein «Erfolg» mit leerer Datei)
+            if not image.save(filename):
+                raise IOError("QImage.save() meldete False (Pfad beschreibbar?)")
+            if not hasattr(self, "_batch_export"):
                 QMessageBox.information(self, "Erfolg",
                     f"Als PNG erfolgreich exportiert!\n"
-                    f"Größe: {int(visible_rect.width())}x{int(visible_rect.height())} px")
-            except Exception as e:
-                QMessageBox.critical(self, "Fehler", f"Export fehlgeschlagen: {str(e)}")
+                    f"Größe: {width}x{height} px")
+        except Exception as e:
+            QMessageBox.critical(self, "Fehler", f"Export fehlgeschlagen: {str(e)}")
 
-    def export_svg(self):
-        """Zeichenfläche als SVG exportieren"""
-        filename, _ = QFileDialog.getSaveFileName(self, "Als SVG exportieren", "", "SVG Dateien (*.svg)")
-        if filename:
+    def _export_content_rect(self):
+        """Rechteck der gezeichneten Elemente für den SVG-Export.
+
+        Deko-Items (Junction-Layer, Raster) melden als boundingRect die
+        gesamte Szene — sie würden die viewBox auf das leere 10000x10000-
+        Raster aufblähen. Das sichtbare A4-Blatt zählt dagegen zur Zeichnung.
+        """
+        from ..canvas.sheet_frame import SheetFrameItem
+        rect = QRectF()
+        for item in self.canvas.scene.items():
+            if getattr(item, "is_decoration", False):
+                if isinstance(item, SheetFrameItem) and item.isVisible():
+                    rect = rect.united(item.mapRectToScene(item.boundingRect()))
+                continue
+            if getattr(item, "is_handle", False) or getattr(item, "is_anchor", False):
+                continue
             try:
-                from PyQt5.QtSvg import QSvgGenerator
+                rect = rect.united(item.mapRectToScene(item.boundingRect()))
+            except RuntimeError:
+                continue
+        return rect
 
-                generator = QSvgGenerator()
-                generator.setFileName(filename)
-                scene_rect = self.canvas.scene.sceneRect()
-                generator.setSize(scene_rect.size().toSize())
-                generator.setViewBox(scene_rect)
+    def export_svg(self, filename=None):
+        """Zeichenfläche als SVG exportieren (Inhaltsrechteck, nicht Raster).
 
-                painter = QPainter()
-                painter.begin(generator)
-                self.canvas.scene.render(painter)
-                painter.end()
+        Die viewBox umfasst die gezeichneten Elemente plus Rand — früher wurde
+        das feste 10000x10000-Szenenrechteck benutzt, wodurch die SVG fast
+        leer wirkte. painter.begin() wird geprüft, damit ein fehlendes
+        SVG-Modul (z. B. im gebündelten Build) nicht still eine leere Datei
+        produziert.
+        """
+        if filename is None:
+            filename, _ = QFileDialog.getSaveFileName(self, "Als SVG exportieren", "", "SVG Dateien (*.svg)")
+            if not filename:
+                return
+        painter = None
+        try:
+            from PyQt5.QtSvg import QSvgGenerator
+        except ImportError as e:
+            QMessageBox.critical(
+                self, "Fehler",
+                "SVG-Modul (PyQt5.QtSvg) ist in dieser Installation nicht "
+                f"vorhanden:\n{e}")
+            return
+        try:
+            content_rect = self._export_content_rect().adjusted(-20, -20, 20, 20)
+            if content_rect.isEmpty():
+                QMessageBox.warning(self, "Nichts zu exportieren",
+                                    "Die Zeichenfläche enthält keine Elemente.")
+                return
 
-                QMessageBox.information(self, "Erfolg", "Als SVG erfolgreich exportiert!")
-            except Exception as e:
-                QMessageBox.critical(self, "Fehler", f"Export fehlgeschlagen: {str(e)}")
+            generator = QSvgGenerator()
+            generator.setFileName(filename)
+            generator.setSize(content_rect.size().toSize())
+            generator.setViewBox(content_rect)
+
+            painter = QPainter()
+            if not painter.begin(generator):
+                raise IOError("QPainter konnte das SVG-Ziel nicht öffnen")
+            self.canvas.scene.render(painter, source=content_rect)
+            painter.end()
+            painter = None
+
+            QMessageBox.information(self, "Erfolg",
+                f"Als SVG erfolgreich exportiert!\n"
+                f"Größe: {int(content_rect.width())}x{int(content_rect.height())}")
+        except Exception as e:
+            if painter is not None:
+                try:
+                    painter.end()
+                except Exception:
+                    pass
+            QMessageBox.critical(self, "Fehler", f"Export fehlgeschlagen: {str(e)}")
 
     def show_guide(self):
         """Anleitungs-Dialog anzeigen (F1)"""

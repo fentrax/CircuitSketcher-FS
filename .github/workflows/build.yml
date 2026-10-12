@@ -53,7 +53,7 @@ jobs:
           done
           iconutil -c icns icon.iconset
       - run: pyinstaller --noconfirm --windowed --name SchaltungsZeichner-FS
-          --icon icon.icns
+          --icon icon.icns --hidden-import PyQt5.QtSvg
           --add-data "assets:assets" --add-data "symbols:symbols" main.py
       - run: hdiutil create -volname "SchaltungsZeichner FS"
           -srcfolder "dist/SchaltungsZeichner-FS.app" -ov -format UDZO SchaltungsZeichner-FS.dmg

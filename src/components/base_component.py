@@ -80,6 +80,8 @@ class _PlaceholderTextItem(QGraphicsTextItem):
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setZValue(10)
+        # Kennzeichen für Aufräum-Sicherheitsnetze (z. B. _clear_preview).
+        self.is_placeholder_text = True
         # Griffpunkt zum Verschieben des Textes (Kind des Bauteils, siehe
         # Klassen-Docstring); Sichtbarkeit folgt der Bauteil-Auswahl.
         self.grip = _TextGripHandle(component, self)
@@ -203,9 +205,24 @@ class BaseComponent(QGraphicsItem):
         return self.placeholder_values.get(key, "")
 
     def clear_placeholders(self):
-        """Alle Platzhalter entfernen (individuelle Versätze bleiben erhalten)"""
+        """Alle Platzhalter entfernen (individuelle Versätze bleiben erhalten).
+
+        Textitems und ihre Griffpunkte werden wirklich aus der Szene entfernt:
+        setParentItem(None) allein liesse sie als freie Elemente in der Szene
+        zurück — nach jedem Drehen blieben so Geister-Kopien der Beschriftung
+        stehen (unbedienbar, da der Doppelklick die Kopie traf).
+        """
         for item in self.placeholder_items.values():
-            item.setParentItem(None)
+            grip = getattr(item, "grip", None)
+            if grip is not None:
+                grip_scene = grip.scene()
+                if grip_scene is not None:
+                    grip_scene.removeItem(grip)
+                else:
+                    grip.setParentItem(None)
+            scene = item.scene()
+            if scene is not None:
+                scene.removeItem(item)
         self.placeholder_items.clear()
         self.placeholder_configs.clear()
 

@@ -2,6 +2,7 @@
 Symbol Editor - allows drawing custom symbols with fine-grained grid,
 including orientation-specific layouts and text placeholders.
 """
+import copy
 import json
 import math
 from pathlib import Path
@@ -31,6 +32,41 @@ from PyQt5.QtWidgets import (
 from ..canvas.grid_canvas import GridCanvas
 from ..components.wire import WIRE_COLOR_PRESETS
 from ..symbols import SYMBOLS_DIR
+
+
+def derive_rotated_orientation(data, clockwise=False):
+    """Orientierungs-Daten um 90 Grad drehen (reine Funktion, ohne Qt).
+
+    Gegen den Uhrzeigersinn (Standard) bildet die Drehung (x, y) -> (-y, x)
+    den linken Pol auf den oberen ab: horizontal -> vertical. Fuer den
+    Rueckweg (vertical -> horizontal) wird im Uhrzeigersinn gedreht,
+    (x, y) -> (y, -x). Bounds werden nicht mitgedreht — der Editor berechnet
+    sie beim Speichern neu.
+    """
+    def rot(point):
+        x, y = float(point[0]), float(point[1])
+        return [y, -x] if clockwise else [-y, x]
+
+    def rot_item(item):
+        item = dict(item)
+        if item.get("type") == "line":
+            item["start"] = rot(item["start"])
+            item["end"] = rot(item["end"])
+        elif item.get("type") == "circle":
+            item["center"] = rot(item["center"])
+        return item
+
+    def rot_placeholder(placeholder):
+        placeholder = dict(placeholder)
+        placeholder["position"] = rot(placeholder.get("position", [0, 0]))
+        return placeholder
+
+    return {
+        "items": [rot_item(i) for i in data.get("items", [])],
+        "placeholders": [rot_placeholder(ph) for ph in data.get("placeholders", [])],
+        "connection_points": [rot(pt) for pt in data.get("connection_points", [])],
+        "origin": rot(data.get("origin", [0.0, 0.0])),
+    }
 
 
 PLACEHOLDER_LABELS = {
@@ -711,6 +747,8 @@ class SymbolEditorDialog(QDialog):
                 "origin": [0.0, 0.0],
             },
         }
+        # Referenz für «nur eine Orientierung bearbeitet»-Erkennung
+        self._original_orientation_data = copy.deepcopy(self.orientation_data)
         self.anchor_item = None
 
         self._init_ui()
@@ -811,6 +849,13 @@ class SymbolEditorDialog(QDialog):
         self.orientation_combo.addItems(["horizontal", "vertical"])
         self.orientation_combo.currentTextChanged.connect(self._on_orientation_changed)
         tool_layout.addWidget(self.orientation_combo)
+
+        self.derive_btn = QPushButton("⟳ Andere ableiten")
+        self.derive_btn.setToolTip(
+            "Die jeweils andere Orientierung automatisch aus der aktuellen "
+            "Zeichnung ableiten (90° gedreht) — erspart das zweite Mal Zeichnen.")
+        self.derive_btn.clicked.connect(self._derive_other_orientation)
+        tool_layout.addWidget(self.derive_btn)
 
         tool_layout.addStretch()
 
@@ -1074,6 +1119,53 @@ class SymbolEditorDialog(QDialog):
         finally:
             self.scene.blockSignals(False)
 
+    def _derive_other_orientation(self):
+        """Andere Orientierung aus der aktuellen Zeichnung ableiten (90°)."""
+        self._store_current_orientation()
+        current = self.current_orientation
+        other = "vertical" if current == "horizontal" else "horizontal"
+        self.orientation_data[other] = derive_rotated_orientation(
+            self.orientation_data[current], clockwise=(current == "vertical"))
+        self.mark_modified()
+        QMessageBox.information(
+            self, "Orientierung abgeleitet",
+            f"Die {other}-Ansicht wurde aus der aktuellen {current}-Zeichnung "
+            "abgeleitet (90° gedreht).\n"
+            "Feinschliff über die Orientierungs-Auswahl oben möglich.")
+
+    def _offer_derive_other_orientation(self):
+        """Beim Speichern fragen, falls nur EINE Orientierung bearbeitet wurde.
+
+        Typischer Fall: Batterie horizontal zur Spannungsquelle umgebaut,
+        vertikal blieb der alte Stand — beim Drehen erschien das Batterie-
+        Symbol. Default ist Nein, damit handgezeichnete Originale nie still
+        überschrieben werden.
+        """
+        changed = [
+            orient for orient, data in self.orientation_data.items()
+            if self._original_orientation_data.get(orient) != data
+        ]
+        if len(changed) != 1:
+            return
+        source = changed[0]
+        target = "vertical" if source == "horizontal" else "horizontal"
+        target_data = self.orientation_data.get(target, {})
+        if not target_data.get("items"):
+            question = (
+                f"Die {target}-Ansicht ist noch leer. Soll sie automatisch aus "
+                f"der {source}-Zeichnung abgeleitet werden (90° gedreht)?")
+        else:
+            question = (
+                f"Nur die {source}-Ansicht wurde bearbeitet — die {target}-"
+                f"Ansicht enthält noch den alten Stand. Soll sie automatisch "
+                "übernommen werden (aktuelle Zeichnung, 90° gedreht)?")
+        answer = QMessageBox.question(
+            self, "Orientierungen", question,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            self.orientation_data[target] = derive_rotated_orientation(
+                self.orientation_data[source], clockwise=(source == "vertical"))
+
     def _on_orientation_changed(self, orientation):
         if orientation == self.current_orientation:
             return
@@ -1118,6 +1210,7 @@ class SymbolEditorDialog(QDialog):
             return
 
         self._store_current_orientation()
+        self._offer_derive_other_orientation()
         self._save_to_path(self.current_file_path)
 
     def save_symbol_as(self):
@@ -1135,10 +1228,14 @@ class SymbolEditorDialog(QDialog):
             filename += ".symbol.json"
 
         self._store_current_orientation()
+        self._offer_derive_other_orientation()
         self._save_to_path(filename)
         self.current_file_path = filename
 
     def _save_to_path(self, path):
+        # Pfad normalisieren (Dialog-Eingabe): resolve() beseitigt relative
+        # Anteile und ../-Segmente — schreiben nur an eindeutig aufgelöste Ziele.
+        path = str(Path(path).resolve())
         # Generate ID from filename (remove .symbol.json extension)
         filename = Path(path).stem  # Gets "resistor" from "resistor.symbol.json"
         if filename.endswith(".symbol"):
@@ -1183,14 +1280,29 @@ class SymbolEditorDialog(QDialog):
             )
             return
 
-        payload = {
-            "version": "1.0",
+        # Felder erhalten, die der Editor nicht bearbeitet — sonst ginge z. B.
+        # «hidden» (Palette-Ausblendung) beim erneuten Speichern einer
+        # vorhandenen Datei verloren (Datenverlust-Bugfix).
+        preserved = {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if isinstance(existing, dict):
+                preserved = existing
+        except (OSError, ValueError):
+            preserved = {}
+        known_keys = {"version", "id", "name", "category",
+                      "default_values", "orientations"}
+
+        payload = {k: v for k, v in preserved.items() if k not in known_keys}
+        payload.update({
+            "version": preserved.get("version", "1.0"),
             "id": symbol_id,
             "name": name,
             "category": category,
             "default_values": default_values,
             "orientations": orientations_payload,
-        }
+        })
 
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -1200,6 +1312,7 @@ class SymbolEditorDialog(QDialog):
             self.id_input.setText(symbol_id)
 
             self.reset_modified()
+            self._original_orientation_data = copy.deepcopy(self.orientation_data)
             QMessageBox.information(self, "Gespeichert", f"Symbol wurde gespeichert:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "Fehler", f"Symbol konnte nicht gespeichert werden:\n{exc}")
@@ -1246,6 +1359,7 @@ class SymbolEditorDialog(QDialog):
             self.orientation_combo.setCurrentText("horizontal")
             self.orientation_combo.blockSignals(False)
             self._load_orientation_scene("horizontal")
+            self._original_orientation_data = copy.deepcopy(self.orientation_data)
         finally:
             self.scene.blockSignals(False)
 
