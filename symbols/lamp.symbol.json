@@ -4,7 +4,7 @@
   "name": "Lampe",
   "category": "Verbraucher",
   "default_values": {
-    "name": "L",
+    "name": "E",
     "voltage": "12 V"
   },
   "orientations": {
@@ -85,7 +85,7 @@
           "key": "voltage",
           "position": [
             0.0,
-            32.0
+            -30.0
           ],
           "alignment": "center"
         },
@@ -94,7 +94,7 @@
           "key": "name",
           "position": [
             0.0,
-            -32.0
+            34.0
           ],
           "alignment": "center"
         }
@@ -112,11 +112,11 @@
       "bounds": {
         "min": [
           -44.0,
-          -32.0
+          -38.0
         ],
         "max": [
           44.0,
-          32.0
+          40.0
         ]
       },
       "origin": [

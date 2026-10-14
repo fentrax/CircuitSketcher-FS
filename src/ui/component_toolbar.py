@@ -8,10 +8,32 @@ Bauteil-Toolbar - Palette zum Ziehen von Bauteilen
 """
 import json
 
-from PyQt5.QtCore import QEvent, QMimeData, QSettings, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QMimeData, QSettings, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QDrag
-from PyQt5.QtWidgets import (QGroupBox, QLabel, QMenu, QPushButton,
+from PyQt5.QtWidgets import (QButtonGroup, QGroupBox, QLabel, QMenu, QPushButton,
                              QVBoxLayout, QWidget)
+
+from .icons import icon, symbol_icon
+
+#: Werkzeuge mit festem Icon (Symbole bekommen ihr Vorschaubild)
+TOOL_ICONS = {"select": "select", "wire": "wire", "voltage": "voltage", "current": "current"}
+
+BUTTON_STYLE = """
+    QPushButton {
+        background-color: #f7f8fa;
+        border: 1px solid #d5d9e0;
+        border-radius: 4px;
+        padding: 4px 6px;
+        text-align: left;
+    }
+    QPushButton:hover { background-color: #eaf2fc; border-color: #9cc3ee; }
+    QPushButton:pressed { background-color: #d6e6f8; }
+    QPushButton:checked {
+        background-color: #d6e6f8;
+        border: 1px solid #0066cc;
+        font-weight: bold;
+    }
+"""
 
 
 class ComponentToolbar(QWidget):
@@ -27,7 +49,12 @@ class ComponentToolbar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.symbol_buttons = {}
+        # Feste Werkzeuge (Auswählen, Leitung, Messwerte) — überdauern set_symbols
+        self.tool_buttons = {}
         self._symbol_definitions = []
+        # Genau ein Werkzeug ist aktiv und sichtbar hervorgehoben.
+        self._tool_group = QButtonGroup(self)
+        self._tool_group.setExclusive(True)
         self._drag_start = None  # (globalPos, QPushButton) für Button-Drag
         self._build_ui()
 
@@ -76,6 +103,9 @@ class ComponentToolbar(QWidget):
 
     def clear_symbol_groups(self):
         """Alle bestehenden Symbolgruppen entfernen."""
+        for button in list(self._tool_group.buttons()):
+            if getattr(button, "_symbol_id", None):
+                self._tool_group.removeButton(button)
         while self.groups_layout.count():
             item = self.groups_layout.takeAt(0)
             widget = item.widget()
@@ -109,6 +139,7 @@ class ComponentToolbar(QWidget):
                     "label": definition.name,
                     "value": definition.symbol_id,
                     "tooltip": "\n".join(tooltip_parts),
+                    "definition": definition,
                 })
             # Gespeicherte Button-Reihenfolge anwenden (unbekannte hinten)
             order = saved_order.get(category, [])
@@ -132,7 +163,18 @@ class ComponentToolbar(QWidget):
                 tooltip = item.get("tooltip")
 
             button = QPushButton(label)
-            button.setMinimumHeight(30)
+            button.setMinimumHeight(32)
+            button.setCheckable(True)
+            button.setIconSize(QSize(26, 26))
+            definition = item.get("definition") if isinstance(item, dict) else None
+            try:
+                if definition is not None:
+                    button.setIcon(symbol_icon(definition, 26))
+                elif value in TOOL_ICONS:
+                    button.setIcon(icon(TOOL_ICONS[value], 22))
+            except Exception:
+                pass  # Vorschaubild ist Zierde — fehlerhafte Symbole trotzdem anbieten
+            self._tool_group.addButton(button)
             if value not in ("wire", "select", "voltage", "current"):
                 button._symbol_id = value
                 button._category = title
@@ -150,27 +192,25 @@ class ComponentToolbar(QWidget):
             elif tooltip:
                 button.setToolTip(tooltip)
             button.clicked.connect(lambda checked, val=value: self.component_selected.emit(val))
-            button.setStyleSheet("""
-                QPushButton {
-                    background-color: #f0f0f0;
-                    border: 1px solid #ccc;
-                    border-radius: 3px;
-                    padding: 5px;
-                    text-align: left;
-                }
-                QPushButton:hover {
-                    background-color: #e0e0e0;
-                }
-                QPushButton:pressed {
-                    background-color: #d0d0d0;
-                }
-            """)
+            button.setStyleSheet(BUTTON_STYLE)
             group_layout.addWidget(button)
             if value:
                 self.symbol_buttons[value] = button
+                if value in TOOL_ICONS:
+                    self.tool_buttons[value] = button
 
         group.setLayout(group_layout)
         return group
+
+    def button_for(self, value):
+        value = value or "select"
+        return self.tool_buttons.get(value) or self.symbol_buttons.get(value)
+
+    def set_active(self, value):
+        """Aktives Werkzeug hervorheben (z. B. nach ESC oder Menüwahl)."""
+        button = self.button_for(value)
+        if button is not None and not button.isChecked():
+            button.setChecked(True)
 
     # ------------------------------------------------------------------
     # Rechtsklick-Menü

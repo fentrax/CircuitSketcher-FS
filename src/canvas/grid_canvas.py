@@ -5,7 +5,7 @@ import math
 
 from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene
 from PyQt5.QtCore import Qt, QPointF, pyqtSignal
-from PyQt5.QtGui import QPainter, QPen, QColor
+from PyQt5.QtGui import QPainter, QPen, QColor, QPolygonF
 
 
 class GridCanvas(QGraphicsView):
@@ -14,6 +14,8 @@ class GridCanvas(QGraphicsView):
     # Feuert, wenn der Mauszeiger den Zeichenbereich verlässt (z. B. um die
     # halbtransparente Platzierungs-Vorschau zu entfernen).
     mouse_left_canvas = pyqtSignal()
+    # Neue Zoomstufe (1.0 = 100 %) — für die Anzeige in der Statusleiste
+    zoom_changed = pyqtSignal(float)
 
     def __init__(self, parent=None, grid_size=20, subdivisions=1):
         super().__init__(parent)
@@ -34,6 +36,10 @@ class GridCanvas(QGraphicsView):
         # Grid styling
         self.major_grid_color = QColor(200, 200, 200)
         self.minor_grid_color = QColor(235, 235, 235)
+        # "lines" (z. B. Symbol-Editor) oder "dots" (Schaltplan wie EPLAN/KiCad)
+        self.grid_style = "lines"
+        self.dot_color = QColor(150, 158, 170)
+        self.dot_major_color = QColor(95, 105, 120)
 
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
@@ -64,6 +70,10 @@ class GridCanvas(QGraphicsView):
         if not self.grid_visible:
             return
 
+        if self.grid_style == "dots":
+            self._draw_dot_grid(painter, rect)
+            return
+
         painter.save()
 
         def draw_grid(step_size, color):
@@ -90,6 +100,49 @@ class GridCanvas(QGraphicsView):
 
         draw_grid(self.grid_size, self.major_grid_color)
         painter.restore()
+
+    #: Punktabstand am Bildschirm mindestens (px) — sonst wird ausgedünnt
+    MIN_DOT_SPACING_PX = 7.0
+    #: Jeder n-te Rasterpunkt etwas kräftiger (Orientierung, 5 × 20 px = 100 px)
+    MAJOR_EVERY = 5
+
+    def _draw_dot_grid(self, painter, rect):
+        """Punktraster: ein Punkt je Rasterschnittpunkt, jeder fünfte etwas
+        kräftiger. Beim Herauszoomen werden die Punkte ausgedünnt, damit das
+        Blatt nicht grau wird (und das Zeichnen schnell bleibt)."""
+        scale = abs(painter.worldTransform().m11()) or 1.0
+        step = float(self.grid_size)
+        major = step * self.MAJOR_EVERY
+        while step * scale < self.MIN_DOT_SPACING_PX:
+            step *= self.MAJOR_EVERY
+        painter.save()
+        for spacing, color, width, skip_major in (
+                (step, self.dot_color, 1.5, step < major),
+                (max(step, major), self.dot_major_color, 2.2, False)):
+            pen = QPen(color, width)
+            pen.setCosmetic(True)          # Punktgrösse unabhängig vom Zoom
+            pen.setCapStyle(Qt.RoundCap)   # runde statt quadratische Punkte
+            painter.setPen(pen)
+            left = math.floor(rect.left() / spacing) * spacing
+            top = math.floor(rect.top() / spacing) * spacing
+            points = QPolygonF()
+            y = top
+            while y <= rect.bottom():
+                x = left
+                on_major_row = abs(y / major - round(y / major)) < 1e-6
+                while x <= rect.right():
+                    if not (skip_major and on_major_row
+                            and abs(x / major - round(x / major)) < 1e-6):
+                        points.append(QPointF(x, y))
+                    x += spacing
+                y += spacing
+            painter.drawPoints(points)
+        painter.restore()
+
+    def set_grid_style(self, style):
+        """'dots' oder 'lines'."""
+        self.grid_style = "dots" if style == "dots" else "lines"
+        self.viewport().update()
 
     def set_grid_visible(self, visible):
         """Raster ein-/ausblenden"""
@@ -134,6 +187,7 @@ class GridCanvas(QGraphicsView):
         self.resetTransform()
         self.scale(factor, factor)
         self._zoom_factor = factor
+        self.zoom_changed.emit(factor)
 
     def wheelEvent(self, event):
         """Zoom mit Mausrad"""
@@ -171,6 +225,17 @@ class GridCanvas(QGraphicsView):
     def zoom_reset(self):
         """Zoom zurücksetzen auf 100%"""
         self.set_zoom_factor(1.0)
+
+    def zoom_to_rect(self, rect, margin=0.9):
+        """Bereich (Szenenkoordinaten) einpassen und zentrieren."""
+        if rect is None or rect.isNull() or rect.width() <= 0 or rect.height() <= 0:
+            self.zoom_reset()
+            return
+        viewport = self.viewport().rect()
+        factor = min(viewport.width() / rect.width(),
+                     viewport.height() / rect.height()) * margin
+        self.set_zoom_factor(min(factor, 4.0))
+        self.centerOn(rect.center())
 
     def get_visible_scene_rect(self):
         """Gibt den aktuell sichtbaren Bereich der Szene zurück"""

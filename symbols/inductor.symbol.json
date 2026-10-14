@@ -4,7 +4,7 @@
   "name": "Spule",
   "category": "Passive Bauteile",
   "default_values": {
-    "name": "L",
+    "name": "R",
     "inductance": "10 mH"
   },
   "orientations": {
@@ -385,7 +385,7 @@
           "key": "name",
           "position": [
             0.0,
-            -34.0
+            34.0
           ],
           "alignment": "center"
         },
@@ -394,7 +394,7 @@
           "key": "inductance",
           "position": [
             0.0,
-            26.0
+            -30.0
           ],
           "alignment": "center"
         }
@@ -412,11 +412,11 @@
       "bounds": {
         "min": [
           -44,
-          -32
+          -38.0
         ],
         "max": [
           44,
-          26
+          40.0
         ]
       },
       "origin": [

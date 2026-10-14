@@ -197,6 +197,12 @@ class Wire(QGraphicsLineItem):
 
     def contextMenuEvent(self, event):
         from PyQt5.QtWidgets import QMenu
+        # Liegt an der Klickposition eine Messwert-Annotation (z. B. der
+        # Spannungsbogen des Bauteils unter/über dieser Leitung), hat deren
+        # Menü Vorrang — die Annotation selbst stapelt unter der Leitung.
+        from src.components.annotations import deliver_context_menu_to_annotation
+        if deliver_context_menu_to_annotation(self, event):
+            return
         menu = QMenu()
         color_menu = menu.addMenu("Farbe")
         for name, rgb in WIRE_COLOR_PRESETS:
@@ -212,9 +218,20 @@ class Wire(QGraphicsLineItem):
         self.set_color(rgb)
 
     def _delete_with_undo(self):
+        # Aus dem eigenen Kontextmenü: Szene erst nach dem Ereignis ändern
+        # (Absturzregel — wie Bauteil/Bogen).
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, self._delete_now)
+
+    def _delete_now(self):
+        try:
+            scene = self.scene()
+        except RuntimeError:
+            return  # bereits zerstört
+        if scene is None:
+            return
         self._push_undo()
-        if self.scene():
-            self.scene().removeItem(self)
+        scene.removeItem(self)
 
     def update_end_point(self, point):
         """Endpunkt der Leitung aktualisieren (Live-Vorschau beim Zeichnen)."""

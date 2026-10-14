@@ -1,10 +1,10 @@
 {
-  "version": "1.0",
+  "version": "1.2",
   "id": "battery",
   "name": "Batterie",
   "category": "Energiequellen",
   "default_values": {
-    "name": "B",
+    "name": "G",
     "voltage": "5 V"
   },
   "orientations": {
@@ -13,67 +13,100 @@
         {
           "type": "line",
           "start": [
-            -40.0,
+            -35.0,
             0.0
           ],
           "end": [
-            -16.0,
+            -18.0,
             0.0
           ]
         },
         {
           "type": "line",
           "start": [
-            16.0,
+            18.0,
             0.0
           ],
           "end": [
-            40.0,
+            35.0,
             0.0
           ]
         },
         {
           "type": "line",
           "start": [
-            -8.0,
+            -18.0,
             -20.0
           ],
           "end": [
-            -8.0,
+            -18.0,
             20.0
           ]
         },
         {
           "type": "line",
           "start": [
-            -4.0,
+            -6.0,
+            -7.0
+          ],
+          "end": [
+            -6.0,
+            7.0
+          ]
+        },
+        {
+          "type": "line",
+          "start": [
+            6.0,
             -20.0
           ],
           "end": [
-            -4.0,
+            6.0,
             20.0
           ]
         },
         {
           "type": "line",
           "start": [
-            8.0,
-            -12.0
+            18.0,
+            -7.0
           ],
           "end": [
-            8.0,
-            12.0
+            18.0,
+            7.0
           ]
         },
         {
           "type": "line",
           "start": [
-            4.0,
-            -12.0
+            -22.0,
+            -30.0
           ],
           "end": [
-            4.0,
-            12.0
+            -14.0,
+            -30.0
+          ]
+        },
+        {
+          "type": "line",
+          "start": [
+            -18.0,
+            -34.0
+          ],
+          "end": [
+            -18.0,
+            -26.0
+          ]
+        },
+        {
+          "type": "line",
+          "start": [
+            14.0,
+            -30.0
+          ],
+          "end": [
+            22.0,
+            -30.0
           ]
         },
         {
@@ -96,19 +129,19 @@
       "placeholders": [
         {
           "type": "placeholder",
-          "key": "name",
+          "key": "voltage",
           "position": [
-            -2.0,
+            -46.0,
             -30.0
           ],
-          "alignment": "center"
+          "alignment": "right"
         },
         {
           "type": "placeholder",
-          "key": "voltage",
+          "key": "name",
           "position": [
             0.0,
-            28.0
+            34.0
           ],
           "alignment": "center"
         }
@@ -126,11 +159,11 @@
       "bounds": {
         "min": [
           -44.0,
-          -30.0
+          -38.0
         ],
         "max": [
           44.0,
-          28.0
+          40.0
         ]
       },
       "origin": [
@@ -144,66 +177,99 @@
           "type": "line",
           "start": [
             0.0,
-            -40.0
+            -35.0
           ],
           "end": [
             0.0,
-            -16.0
+            -18.0
           ]
         },
         {
           "type": "line",
           "start": [
             0.0,
-            16.0
+            18.0
           ],
           "end": [
             0.0,
-            40.0
+            35.0
           ]
         },
         {
           "type": "line",
           "start": [
             -20.0,
-            -8.0
+            -18.0
           ],
           "end": [
             20.0,
-            -8.0
+            -18.0
+          ]
+        },
+        {
+          "type": "line",
+          "start": [
+            -7.0,
+            -6.0
+          ],
+          "end": [
+            7.0,
+            -6.0
           ]
         },
         {
           "type": "line",
           "start": [
             -20.0,
-            -4.0
+            6.0
           ],
           "end": [
             20.0,
-            -4.0
+            6.0
           ]
         },
         {
           "type": "line",
           "start": [
-            -12.0,
-            8.0
+            -7.0,
+            18.0
           ],
           "end": [
-            12.0,
-            8.0
+            7.0,
+            18.0
           ]
         },
         {
           "type": "line",
           "start": [
-            -12.0,
-            4.0
+            28.0,
+            -22.0
           ],
           "end": [
-            12.0,
-            4.0
+            28.0,
+            -14.0
+          ]
+        },
+        {
+          "type": "line",
+          "start": [
+            24.0,
+            -18.0
+          ],
+          "end": [
+            32.0,
+            -18.0
+          ]
+        },
+        {
+          "type": "line",
+          "start": [
+            24.0,
+            18.0
+          ],
+          "end": [
+            32.0,
+            18.0
           ]
         },
         {
@@ -226,19 +292,19 @@
       "placeholders": [
         {
           "type": "placeholder",
-          "key": "name",
+          "key": "voltage",
           "position": [
-            48.0,
-            -16.0
+            -8.0,
+            -50.0
           ],
-          "alignment": "center"
+          "alignment": "right"
         },
         {
           "type": "placeholder",
-          "key": "voltage",
+          "key": "name",
           "position": [
-            58.0,
-            4.0
+            -48.0,
+            0.0
           ],
           "alignment": "center"
         }
@@ -255,11 +321,11 @@
       ],
       "bounds": {
         "min": [
-          -20.0,
-          -44.0
+          -24.0,
+          -58.0
         ],
         "max": [
-          58.0,
+          36.0,
           44.0
         ]
       },

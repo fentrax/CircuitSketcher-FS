@@ -33,7 +33,7 @@ LOGO_FILENAME = "logo.png"  # gesucht unter <App-Basis>/assets/logo.png
 LOGO_DISPLAY_WIDTH = 360  # Anzeige-Breite in Pixeln
 
 COPYRIGHT_LINE = "© 2026 fentrax"
-APP_VERSION = "Version 1.4-FS"
+APP_VERSION = "Version 1.5-FS"
 APP_DESCRIPTION = (
     "Erstellen Sie einfache Schaltpläne für Prüfungsaufgaben, Tests und\n"
     "Unterrichtsmaterial – schnell, übersichtlich und normgerecht."

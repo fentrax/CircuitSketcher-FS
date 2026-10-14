@@ -2,9 +2,9 @@
   "version": "1.0",
   "id": "voltmeter",
   "name": "Voltmeter",
-  "category": "Messgeräte",
+  "category": "Messger\u00e4te",
   "default_values": {
-    "name": "V",
+    "name": "P",
     "voltage": "0 V"
   },
   "orientations": {
@@ -13,7 +13,7 @@
         {
           "type": "line",
           "start": [
-            -40.0,
+            -35.0,
             0.0
           ],
           "end": [
@@ -28,7 +28,7 @@
             0.0
           ],
           "end": [
-            40.0,
+            35.0,
             0.0
           ]
         },
@@ -55,6 +55,28 @@
             0.0
           ],
           "radius": 4.0
+        },
+        {
+          "type": "line",
+          "start": [
+            -5.0,
+            -6.0
+          ],
+          "end": [
+            0.0,
+            7.0
+          ]
+        },
+        {
+          "type": "line",
+          "start": [
+            5.0,
+            -6.0
+          ],
+          "end": [
+            0.0,
+            7.0
+          ]
         }
       ],
       "placeholders": [
@@ -63,7 +85,7 @@
           "key": "voltage",
           "position": [
             0.0,
-            0.0
+            -30.0
           ],
           "alignment": "center"
         },
@@ -72,7 +94,7 @@
           "key": "name",
           "position": [
             0.0,
-            -36.0
+            34.0
           ],
           "alignment": "center"
         }
@@ -90,11 +112,11 @@
       "bounds": {
         "min": [
           -44.0,
-          -36.0
+          -38.0
         ],
         "max": [
           44.0,
-          20.0
+          40.0
         ]
       },
       "origin": [
@@ -108,7 +130,7 @@
           "type": "line",
           "start": [
             0.0,
-            -40.0
+            -35.0
           ],
           "end": [
             0.0,
@@ -123,7 +145,7 @@
           ],
           "end": [
             0.0,
-            40.0
+            35.0
           ]
         },
         {
@@ -149,6 +171,28 @@
             40.0
           ],
           "radius": 4.0
+        },
+        {
+          "type": "line",
+          "start": [
+            -5.0,
+            -6.0
+          ],
+          "end": [
+            0.0,
+            7.0
+          ]
+        },
+        {
+          "type": "line",
+          "start": [
+            5.0,
+            -6.0
+          ],
+          "end": [
+            0.0,
+            7.0
+          ]
         }
       ],
       "placeholders": [
@@ -165,7 +209,7 @@
           "type": "placeholder",
           "key": "voltage",
           "position": [
-            0.0,
+            34.0,
             0.0
           ],
           "alignment": "center"

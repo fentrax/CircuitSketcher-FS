@@ -90,7 +90,9 @@ class _PlaceholderTextItem(QGraphicsTextItem):
         if change == QGraphicsItem.ItemPositionHasChanged:
             grip = getattr(self, "grip", None)
             if grip is not None:
-                grip.setPos(value)
+                # Sichtbare linke obere Textecke — auch wenn der Text in einer
+                # 180°-Lage gegenrotiert ist (reine Item-Mathematik).
+                grip.setPos(self.mapToParent(QPointF(0.0, 0.0)))
             if not self._applying_offset and self._standard_pos is not None:
                 standard = self._standard_pos
                 offsets = getattr(self.component, "placeholder_offsets", None)
@@ -333,17 +335,22 @@ class BaseComponent(QGraphicsItem):
 
     def contextMenuEvent(self, event):
         """Rechtsklick-Kontextmenü verarbeiten"""
+        # Messwert-Annotation an der Klickposition (z. B. Spannungsbogen)
+        # bekommt ihr eigenes Menü, nicht das Bauteil-Menü.
+        from src.components.annotations import deliver_context_menu_to_annotation
+        if deliver_context_menu_to_annotation(self, event):
+            return
         menu = QMenu()
 
         # Drehen
-        rotate_action = QAction("Drehen (90°)", None)
-        rotate_action.triggered.connect(self.rotate_component)
+        rotate_action = QAction("Drehen (90°)", menu)
+        rotate_action.triggered.connect(self._rotate_from_menu)
         menu.addAction(rotate_action)
 
         # Symbol im Symbol-Editor bearbeiten (falls vom Hauptfenster unterstützt)
         top = self._main_window()
         if top is not None and hasattr(top, "edit_symbol_component"):
-            edit_action = QAction("Symbol bearbeiten…", None)
+            edit_action = QAction("Symbol bearbeiten…", menu)
             edit_action.triggered.connect(lambda: top.edit_symbol_component(self))
             menu.addAction(edit_action)
 
@@ -355,29 +362,55 @@ class BaseComponent(QGraphicsItem):
         menu.addSeparator()
 
         # Vergrößern
-        scale_up_action = QAction("Vergrößern", None)
-        scale_up_action.triggered.connect(lambda: self.scale_component(1.2))
+        scale_up_action = QAction("Vergrößern", menu)
+        scale_up_action.triggered.connect(lambda checked=False: self._scale_from_menu(1.2))
         menu.addAction(scale_up_action)
 
         # Verkleinern
-        scale_down_action = QAction("Verkleinern", None)
-        scale_down_action.triggered.connect(lambda: self.scale_component(0.8))
+        scale_down_action = QAction("Verkleinern", menu)
+        scale_down_action.triggered.connect(lambda checked=False: self._scale_from_menu(0.8))
         menu.addAction(scale_down_action)
 
         menu.addSeparator()
 
         # Löschen
-        delete_action = QAction("Löschen", None)
+        delete_action = QAction("Löschen", menu)
         delete_action.triggered.connect(self.delete_self)
         menu.addAction(delete_action)
 
         # Menü anzeigen
         menu.exec_(event.screenPos())
 
-    def delete_self(self):
-        """Bauteil von Szene löschen"""
-        if self.scene():
-            self.scene().removeItem(self)
+    def _rotate_from_menu(self, checked=False):
+        """Kontextmenü-Drehen: wie Bearbeiten > Drehen undo-fähig."""
+        self.rotate_component()
+        self._push_undo_from_component()
+
+    def _scale_from_menu(self, factor):
+        self.scale_component(factor)
+        self._push_undo_from_component()
+
+    def delete_self(self, checked=False):
+        """Bauteil von Szene löschen (undo-fähig).
+
+        Läuft aus dem Kontextmenü dieses Bauteils — die Szenen-Mutation
+        erfolgt deshalb erst nach dem Ereignis (Absturzregel).
+        """
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, self._delete_now)
+
+    def _delete_now(self):
+        try:
+            scene = self.scene()
+        except RuntimeError:
+            return  # bereits zerstört
+        if scene is None:
+            return
+        top = self._main_window()
+        scene.removeItem(self)
+        push = getattr(top, "_push_undo_snapshot", None)
+        if callable(push):
+            push()
 
     def get_connection_points(self):
         """Absolute Positionen der Verbindungspunkte erhalten"""
@@ -448,6 +481,9 @@ class BaseComponent(QGraphicsItem):
         standard_x = position.x() - offset_x
         standard_y = position.y() - offset_y
         item._standard_pos = QPointF(standard_x, standard_y)
+        # Gegenrotation (180°-Schritt) um die Textmitte — sonst kippt das
+        # Label um seine Ecke und landet neben dem Standardplatz.
+        item.setTransformOriginPoint(rect.center())
         # Individuellen Versatz (Drag durch den Nutzer) anwenden
         dx, dy = self.placeholder_offsets.get(key, (0.0, 0.0))
         item._applying_offset = True

@@ -149,6 +149,7 @@ class SymbolComponent(BaseComponent):
         self._init_fs_extras()
 
         self._apply_rotation_transform()
+        self._layout_labels()
         self.update()
 
     def _apply_rotation_transform(self):
@@ -273,7 +274,25 @@ class SymbolComponent(BaseComponent):
                         "color": color,
                     }
                 )
+        self._mark_glyphs(prepared)
         return prepared
+
+    def _mark_glyphs(self, prepared):
+        """Linien vollständig innerhalb eines Symbolkreises (Messgeräte-,
+        Motorbuchstaben «A», «V», «M») als Schriftzeichen markieren: sie
+        müssen lesbar bleiben, wenn Qt das Bauteil um 180° dreht."""
+        bodies = [i for i in prepared if i["type"] == "circle"
+                  and i["radius"] > self.POLE_MAX_CIRCLE_RADIUS]
+        for item in prepared:
+            if item["type"] != "line":
+                continue
+            for body in bodies:
+                c, r = body["center"], body["radius"]
+                inside = all((pt.x() - c.x()) ** 2 + (pt.y() - c.y()) ** 2 < (r - 0.5) ** 2
+                             for pt in (item["start"], item["end"]))
+                if inside:
+                    item["glyph_center"] = c
+                    break
 
     def _shift_point(self, coords) -> QPointF:
         return QPointF(
@@ -284,7 +303,15 @@ class SymbolComponent(BaseComponent):
     def paint(self, painter, option, widget):
         painter.setBrush(Qt.NoBrush)
 
+        upside_down = self.rotation_step >= 2
         for item in self.render_items:
+            if item["type"] == "line" and upside_down and "glyph_center" in item:
+                # Punktspiegelung an der Kreismitte hebt die Qt-180°-Drehung
+                # für das Schriftzeichen auf — «A» bleibt «A», nicht «∀».
+                c = item["glyph_center"]
+                item = dict(item,
+                            start=QPointF(2 * c.x() - item["start"].x(), 2 * c.y() - item["start"].y()),
+                            end=QPointF(2 * c.x() - item["end"].x(), 2 * c.y() - item["end"].y()))
             if item["type"] == "line":
                 base_pen = QPen(item["color"], 2)
                 base_pen.setCapStyle(Qt.RoundCap)
@@ -328,11 +355,205 @@ class SymbolComponent(BaseComponent):
         self.orientation = orientation
         self.apply_orientation()
 
-    def rotate_component(self):
-        """Um 90° weiterdrehen: 0° -> 90° -> 180° -> 270° -> 0°."""
+    def rotate_component(self, checked=False):
+        """Um 90° weiterdrehen: 0° -> 90° -> 180° -> 270° -> 0°.
+
+        Drehen ist ein Neu-Layout: manuell verschobene Beschriftungen und
+        Bogenwerte springen auf ihre automatische Lage zurück — ein alter
+        Versatz zeigt nach dem Drehen in eine sinnlose Richtung und würde
+        Texte in den Symbolkörper schieben.
+        """
+        self._freeze_voltage_bases()
+        self.placeholder_offsets.clear()
+        for annotation in self._voltage_arcs():
+            annotation._text_offset = QPointF(0.0, 0.0)
         self.rotation_step = (self.rotation_step + 1) % 4
         self.orientation = "horizontal" if self.rotation_step % 2 == 0 else "vertical"
         self.apply_orientation()
+        self._sync_voltage_annotations()
+
+    def _freeze_voltage_bases(self):
+        """Bogen-Basis festhalten, solange angle_deg noch zum aktuellen Schritt
+        passt (reine Rechnung, keine Szenen-Abfrage). Der verzögerte Sync
+        allein würde bei mehrfachem Drehen vor dem nächsten Ereignisschleifen-
+        Durchlauf (Tasten-Autorepeat) die Basis aus dem falschen Schritt
+        herleiten."""
+        step = self.rotation_step
+        for annotation in getattr(self, "annotations", []):
+            if (getattr(annotation, "ANNOTATION_TYPE", "") == "voltage"
+                    and getattr(annotation, "_base_angle", None) is None):
+                annotation._base_angle = (annotation.angle_deg + step * 90
+                                          + (step // 2) * 180) % 360
+
+    def _sync_voltage_annotations(self):
+        """Spannungsbögen an die neue Bauteillage anpassen (verzögert).
+
+        Die Szenen-Abfragen (Pol-Mittelpunkt) dürfen nicht im Maus-Dispatch
+        laufen (Absturzregel) — daher singleShot. Der Bogen selbst ist kein
+        reines Kind-Mitdrehen: gerade Schritte rotieren das Bauteil per Qt
+        ((step//2)*180, Kinder drehen mit), ungerade Schritte tauschen die
+        Geometrie (Kinder bleiben stehen). Der lokale Bogenwinkel gleicht das
+        aus, sodass er visuell um -step*90 wandert (oben, links, unten, rechts).
+        """
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, self._sync_voltage_annotations_now)
+
+    def _sync_voltage_annotations_now(self):
+        try:
+            qt_angle = (self.rotation_step // 2) * 180
+            visual = self.rotation_step * 90
+            for annotation in list(getattr(self, "annotations", [])):
+                if getattr(annotation, "ANNOTATION_TYPE", "") != "voltage":
+                    continue
+                base = getattr(annotation, "_base_angle", None)
+                if base is None:
+                    # Basis aus dem VORHERIGEN Schritt herleiten: der aktuelle
+                    # Winkel galt noch für die alte Lage. (Mit dem neuen Schritt
+                    # gerechnet heben sich die Winkel gegenseitig auf — der
+                    # Bogen blieb oben hängen.)
+                    prev = (self.rotation_step - 1) % 4
+                    base = (annotation.angle_deg + prev * 90
+                            + (prev // 2) * 180) % 360
+                    annotation._base_angle = base
+                # Bogen wandert gegen den Uhrzeigersinn: oben -> links ->
+                # unten -> rechts (visuell = base - step*90).
+                annotation.set_angle((base - visual - qt_angle) % 360)
+                poles = self.get_pole_points()
+                if len(poles) == 2:
+                    mid = QPointF((poles[0].x() + poles[1].x()) / 2.0,
+                                  (poles[0].y() + poles[1].y()) / 2.0)
+                    annotation.setPos(self.mapFromScene(mid))
+            self._layout_labels()
+        except RuntimeError:
+            pass  # Bauteil wurde zwischenzeitlich gelöscht
+
+    # ------------------------------------------------------------------
+    # Automatisches Beschriftungs-Layout
+    # ------------------------------------------------------------------
+    #: Abstand Beschriftungsblock <-> Symbolkörper (px)
+    LABEL_GAP = 4.0
+    #: Mindestabstand Bogenenden <-> Symbolkörper (px)
+    ARC_BODY_CLEARANCE = 10.0
+    # Seiten im Bildschirm-Sinn: 0 oben, 1 rechts, 2 unten, 3 links
+    _SIDE_VECTORS = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
+
+    def _voltage_arcs(self):
+        """Spannungsbögen dieses Bauteils (über die Kind-Items, damit auch ein
+        frisch erzeugter, noch nicht registrierter Bogen zählt)."""
+        return [child for child in self.childItems()
+                if getattr(child, "ANNOTATION_TYPE", "") == "voltage"]
+
+    def _body_rect(self):
+        """Lokale Hülle der gezeichneten Symbolteile (ohne Texte)."""
+        rect = None
+        for item in self.render_items:
+            if item["type"] == "line":
+                part = QRectF(item["start"], item["end"]).normalized()
+            elif item["type"] == "circle":
+                r = item["radius"]
+                c = item["center"]
+                part = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+            else:
+                continue
+            rect = part if rect is None else rect.united(part)
+        return rect if rect is not None else QRectF(self.local_bounding_rect)
+
+    def _label_side(self):
+        """Bildschirmseite für den Beschriftungsblock.
+
+        Liegt ein Spannungsbogen am Bauteil, kommt die Beschriftung auf die
+        Gegenseite (nie Überschneidung von Bogen, Wert und Name). Ohne Bogen
+        gilt die Gegenseite der Standard-Bogenlage — das Setzen eines Bogens
+        lässt die Beschriftung damit stehen.
+        """
+        qt_angle = (self.rotation_step // 2) * 180
+        arcs = self._voltage_arcs()
+        if arcs:
+            arc_side = int(round(((arcs[0].angle_deg + qt_angle) % 360) / 90.0)) % 4
+        else:
+            arc_side = (-self.rotation_step) % 4
+        return (arc_side + 2) % 4
+
+    def _ordered_label_keys(self):
+        keys = list(self.placeholder_items.keys())
+        if "name" in keys:
+            keys.remove("name")
+            keys.insert(0, "name")
+        return keys
+
+    def _layout_labels(self):
+        """Name/Wert als Block ausserhalb des Symbolkörpers anordnen und
+        Bögen auf Abstand zum Körper halten. Reine Item-Geometrie (keine
+        Szenen-Abfragen) — darf aus Ereignissen heraus laufen."""
+        if not hasattr(self, "render_items"):
+            return  # noch in BaseComponent.__init__
+        body = self._body_rect()
+        flip = self.rotation_step >= 2  # Qt dreht das ganze Bauteil um 180°
+        visual = (QRectF(-body.right(), -body.bottom(), body.width(), body.height())
+                  if flip else QRectF(body))
+
+        keys = self._ordered_label_keys()
+        if keys:
+            side = self._label_side()
+            rects = [self.placeholder_items[k].boundingRect() for k in keys]
+            total_h = sum(r.height() for r in rects)
+            gap = self.LABEL_GAP
+            if side in (0, 2):
+                y = (visual.top() - gap - total_h) if side == 0 else (visual.bottom() + gap)
+                centers = []
+                for r in rects:
+                    centers.append(QPointF(visual.center().x(), y + r.height() / 2.0))
+                    y += r.height()
+            else:
+                y = visual.center().y() - total_h / 2.0
+                centers = []
+                for r in rects:
+                    if side == 1:
+                        x = visual.right() + gap + r.width() / 2.0
+                    else:
+                        x = visual.left() - gap - r.width() / 2.0
+                    centers.append(QPointF(x, y + r.height() / 2.0))
+                    y += r.height()
+            for key, rect, center in zip(keys, rects, centers):
+                item = self.placeholder_items[key]
+                local = QPointF(-center.x(), -center.y()) if flip else center
+                standard = local - rect.center()
+                item._standard_pos = standard
+                item.setTransformOriginPoint(rect.center())
+                dx, dy = self.placeholder_offsets.get(key, (0.0, 0.0))
+                item._applying_offset = True
+                try:
+                    item.setPos(standard + QPointF(dx, dy))
+                finally:
+                    item._applying_offset = False
+                grip = getattr(item, "grip", None)
+                if grip is not None:
+                    grip.setPos(item.mapToParent(QPointF(0.0, 0.0)))
+
+        for arc in self._voltage_arcs():
+            setter = getattr(arc, "set_base_offset", None)
+            if not callable(setter):
+                continue
+            direction = arc._rotated(QPointF(0.0, -1.0))
+            dx, dy = round(direction.x()), round(direction.y())
+            p = arc.pos()
+            if dy < 0:
+                extent = p.y() - body.top()
+            elif dy > 0:
+                extent = body.bottom() - p.y()
+            elif dx > 0:
+                extent = body.right() - p.x()
+            else:
+                extent = p.x() - body.left()
+            from .annotations import ARC_BASE_OFFSET
+            setter(max(float(ARC_BASE_OFFSET), extent + self.ARC_BODY_CLEARANCE))
+
+    def _update_placeholder_text(self, key):
+        super()._update_placeholder_text(key)
+        item = self.placeholder_items.get(key)
+        if item is not None:
+            item.document().setDocumentMargin(1.0)
+        self._layout_labels()
 
     def setRotation(self, angle):
         """Externen Rotationswinkel auf den nächsten 90°-Schritt abbilden."""

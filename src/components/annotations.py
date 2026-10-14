@@ -8,7 +8,8 @@ Doppelklick frei editierbar (z. B. "20 V", "15 mV", "10 kA").
 import math
 
 from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QColor, QPen, QBrush, QPainterPath, QPolygonF, QPainterPathStroker
+from PyQt5.QtGui import (QColor, QPen, QBrush, QPainterPath, QPolygonF,
+                         QPainterPathStroker, QTransform)
 from PyQt5.QtWidgets import QGraphicsItem, QGraphicsTextItem, QInputDialog, QMenu, QAction, QStyle
 
 VOLTAGE_COLOR = QColor(0, 102, 204)
@@ -21,25 +22,72 @@ ARC_BASE_OFFSET = 34   # Abstand Bogenenden über Bauteilmitte (y negativ = oben
 TRIANGLE_SIZE = 12     # Dreieckshalbe Breite/Höhe des Strompfeils
 ARROW_LENGTH = 9       # Kleiner Pfeil am rechten Bogenende
 ARROW_WIDTH = 3.5
+TEXT_GAP = 3.0         # Abstand Werttext <-> Bogenscheitel/Pfeil
+TEXT_MARGIN = 1.0      # Dokumentrand der Textitems (Qt-Standard 4 px wirkt luftig)
+
+
+def deliver_context_menu_to_annotation(receiver, event):
+    """Kontextmenü-Ereignis an eine Annotation unter dem Cursor zustellen.
+
+    Annotationen sind Kind-Items ihres Zielelements und stapeln deshalb
+    unter eigenständigen Elementen, die später in die Szene gekommen sind
+    (gleiche z-Ebene entscheidet die Einfügereihenfolge — eine Leitung
+    über dem Bauteil überdeckt den ganzen Bauteil-Stack inkl. Bogen). Der
+    Rechtsklick auf einen Bogen traf so fast immer das fremde Menü. Elemente
+    mit eigenem Kontextmenü reichen das Ereignis hier zuerst an eine
+    Annotation an der Klickposition weiter. Rueckgabe: zugestellt?
+    """
+    scene = receiver.scene()
+    if scene is None:
+        return False
+    pos = event.scenePos()
+    for item in scene.items(pos):
+        if getattr(item, "is_annotation", False) and item is not receiver:
+            item.contextMenuEvent(event)
+            if event.isAccepted():
+                return True
+    return False
 
 
 class _AnnotationText(QGraphicsTextItem):
-    """Wert-Text einer Annotation (Doppelklick = bearbeiten)."""
+    """Wert-Text einer Annotation (Doppelklick = bearbeiten).
+
+    Ist die Annotation AUSGEWÄHLT, lässt sich der Text eigenständig ziehen —
+    die örtliche Anordnung des Messwerts ist damit frei (Versatz wird
+    serialisiert). Nicht ausgewählt: Klicks fallen durch auf die Annotation.
+    """
 
     def __init__(self, annotation, color):
         super().__init__(annotation)
         self.annotation = annotation
         self.setDefaultTextColor(color)
+        self.document().setDocumentMargin(TEXT_MARGIN)
         self.setFlag(QGraphicsItem.ItemIsSelectable, False)
         self.setFlag(QGraphicsItem.ItemIsMovable, False)
-        # Ohne Text-Interaktion fallen Klicks durch den Text hindurch auf die
-        # Annotation darunter (auswählen/verschieben); der Doppelklick wird
-        # weiter unten abgefangen.
         self.setTextInteractionFlags(Qt.NoTextInteraction)
 
     def mouseDoubleClickEvent(self, event):
         self.annotation.edit_value()
         event.accept()
+
+    def mousePressEvent(self, event):
+        if not self.annotation.isSelected():
+            event.ignore()
+            return
+        super().mousePressEvent(event)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionHasChanged:
+            # Der Text gehört zur Bounding-Rect der Annotation — Verschieben
+            # muss die Geometrie-Ankündigung auslösen (nur Struktur, keine
+            # Szenen-Abfragen: absturzsicher im Maus-Dispatch).
+            self.annotation.prepareGeometryChange()
+            self.annotation.update()
+        return super().itemChange(change, value)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self.annotation._commit_text_offset()
 
 
 class BaseAnnotation(QGraphicsItem):
@@ -50,12 +98,25 @@ class BaseAnnotation(QGraphicsItem):
     def __init__(self, parent_item):
         super().__init__(parent_item)
         self.value = ""
+        self._text_offset = QPointF(0.0, 0.0)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setZValue(8)
         self._press_pos = None
         self.text_item = _AnnotationText(self, self.text_color())
         self._update_text()
+        # Auf einem bereits um 180° gedrehten Bauteil (Platzieren, Laden,
+        # Einfügen) sofort gegenrotieren — reine Item-Eigenschaft, keine
+        # Szenen-Abfrage.
+        if parent_item is not None:
+            self.keep_text_upright(-parent_item.rotation())
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemSelectedHasChanged:
+            # Wert-Text erst bei ausgewählter Annotation greifbar machen
+            # (gleiches Muster wie Bauteil-Beschriftungen).
+            self.text_item.setFlag(QGraphicsItem.ItemIsMovable, bool(value))
+        return super().itemChange(change, value)
 
     # -- von Unterklassen ------------------------------------------------
     def text_color(self):
@@ -91,11 +152,31 @@ class BaseAnnotation(QGraphicsItem):
 
     def _update_text(self):
         self.text_item.setPlainText(self.value)
-        anchor = self.text_anchor()
+        anchor = self.text_anchor() + self._text_offset
         rect = self.text_item.boundingRect()
         self.text_item.setPos(anchor.x() - rect.width() / 2.0,
                               anchor.y() - rect.height() / 2.0)
+        # Gegenrotation um die Textmitte: sonst schwenkt der Text um seine
+        # linke obere Ecke und springt bei 180° vom Anker weg.
+        self.text_item.setTransformOriginPoint(rect.center())
         self.prepareGeometryChange()
+
+    def _commit_text_offset(self):
+        """Versatz des Wert-Texts nach dem Ziehen übernehmen."""
+        rect = self.text_item.boundingRect()
+        centered = self.text_anchor() + QPointF(-rect.width() / 2.0,
+                                                -rect.height() / 2.0)
+        self._text_offset = self.text_item.pos() - centered
+        self._request_undo()
+
+    def set_text_offset(self, dx, dy):
+        self._text_offset = QPointF(float(dx), float(dy))
+        self._update_text()
+
+    def _reset_text_offset(self):
+        self._request_undo()
+        self._text_offset = QPointF(0.0, 0.0)
+        self._update_text()
 
     def keep_text_upright(self, angle):
         """Wert-Text gegen die Drehung des Zielelements rotieren."""
@@ -130,21 +211,40 @@ class BaseAnnotation(QGraphicsItem):
 
     def contextMenuEvent(self, event):
         menu = QMenu()
-        edit_action = QAction("Wert bearbeiten", None)
+        edit_action = QAction("Wert bearbeiten", menu)
         edit_action.triggered.connect(self.edit_value)
         menu.addAction(edit_action)
         self._extend_context_menu(menu)
+        if self._text_offset.manhattanLength() > 0.5:
+            reset = QAction("Textposition zurücksetzen", menu)
+            reset.triggered.connect(self._reset_text_offset)
+            menu.addAction(reset)
         menu.addSeparator()
-        delete_action = QAction("Löschen", None)
+        delete_action = QAction("Löschen", menu)
         delete_action.triggered.connect(self.delete_later)
         menu.addAction(delete_action)
         menu.exec_(event.screenPos())
         event.accept()
 
+    def _text_offset_dict(self):
+        if self._text_offset.manhattanLength() > 0.5:
+            return [round(self._text_offset.x(), 1), round(self._text_offset.y(), 1)]
+        return None
+
     def _extend_context_menu(self, menu):
         pass
 
-    def delete_later(self):
+    def delete_later(self, checked=False):
+        # Aus dem eigenen Kontextmenü: Szene erst nach dem Ereignis ändern.
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, self._delete_now)
+
+    def _delete_now(self):
+        try:
+            if self.scene() is None:
+                return
+        except RuntimeError:
+            return
         self._request_undo()
         if self.scene():
             # Sicherheitshalber erst aus Registry des Bauteils entfernen.
@@ -153,21 +253,47 @@ class BaseAnnotation(QGraphicsItem):
             if registry is not None and self in registry:
                 registry.remove(self)
             self.scene().removeItem(self)
+            relayout = getattr(parent, "_layout_labels", None)
+            if callable(relayout):
+                relayout()
 
 
 class VoltageAnnotation(BaseAnnotation):
     """Blauer, leicht gebogener Spannungsbogen über einem Bauteil.
 
     `flipped` spiegelt den Bogen: der Messpfeil sitzt dann am linken statt
-    am rechten Ende (Messrichtung umgekehrt).
+    am rechten Ende (Messrichtung umkehren). `angle` dreht den Bogen in
+    90°-Schritten (0 = über dem Bauteil, 90 = rechts, 270 = links daneben —
+    links ist die Standardlage für vertikal stehende Bauteile). Der Wert-Text bleibt stets aufrecht.
     """
 
     ANNOTATION_TYPE = "voltage"
 
-    def __init__(self, parent_item, value="U", flipped=False):
+    def __init__(self, parent_item, value="U", flipped=False, angle=0.0):
         self.flipped = bool(flipped)
+        # Früh setzen: BaseAnnotation.__init__ ruft bereits text_anchor() auf.
+        self.angle_deg = float(angle) % 360.0
+        # Abstand Bogenenden <-> Bauteilachse; das Bauteil vergrössert ihn,
+        # wenn der Symbolkörper (z. B. Messgerät, Taster) höher ist.
+        self.base_offset = float(ARC_BASE_OFFSET)
         super().__init__(parent_item)
         self.set_value(value)
+        self._notify_parent_layout()
+
+    def _notify_parent_layout(self):
+        """Bauteil-Beschriftungen auf die Gegenseite des Bogens legen."""
+        relayout = getattr(self.parentItem(), "_layout_labels", None)
+        if callable(relayout):
+            relayout()
+
+    def set_base_offset(self, offset):
+        offset = float(offset)
+        if abs(offset - self.base_offset) < 0.01:
+            return
+        self.prepareGeometryChange()
+        self.base_offset = offset
+        self._update_text()
+        self.update()
 
     def text_color(self):
         return VOLTAGE_COLOR
@@ -180,28 +306,73 @@ class VoltageAnnotation(BaseAnnotation):
         self.prepareGeometryChange()
         self.update()
 
+    def set_angle(self, angle):
+        self.angle_deg = float(angle) % 360.0
+        self.prepareGeometryChange()
+        self._update_text()
+        self.update()
+        self._notify_parent_layout()
+
+    def _rotate_step(self, checked=False):
+        # Gleiche Richtung wie die Bauteil-Synchronisation: visuell gegen den
+        # Uhrzeigersinn (oben -> links -> unten -> rechts). Die gemerkte Basis
+        # verwerfen, damit das nächste Bauteil-Drehen von dieser Lage ausgeht.
+        self._request_undo()
+        self.rotate_quarter()
+
+    def rotate_quarter(self):
+        """Bogen eine Vierteldrehung weiter (ohne Undo-Schritt)."""
+        self._base_angle = None
+        self.set_angle(self.angle_deg - 90.0)
+
     def _mirror(self):
         return -1.0 if self.flipped else 1.0
 
+    def _rotated(self, point):
+        rad = math.radians(self.angle_deg)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        return QPointF(point.x() * cos_a - point.y() * sin_a,
+                       point.x() * sin_a + point.y() * cos_a)
+
     def boundingRect(self):
-        rect = QRectF(-ARC_HALF_WIDTH - 5, -ARC_BASE_OFFSET - ARC_HEIGHT - 5,
-                      ARC_HALF_WIDTH * 2 + 10, ARC_HEIGHT + ARC_BASE_OFFSET + 10)
+        rect = QRectF(-ARC_HALF_WIDTH - 5, -self.base_offset - ARC_HEIGHT - 5,
+                      ARC_HALF_WIDTH * 2 + 10, ARC_HEIGHT + self.base_offset + 10)
+        corners = [self._rotated(c) for c in (
+            rect.topLeft(), rect.topRight(), rect.bottomLeft(), rect.bottomRight())]
+        xs = [p.x() for p in corners]
+        ys = [p.y() for p in corners]
+        rot_rect = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
         text_rect = QRectF(self.text_item.pos(), self.text_item.boundingRect().size())
-        return rect.united(text_rect)
+        return rot_rect.united(text_rect)
 
     def shape(self):
-        """Trefferfläche = Bogenkontur (mit Toleranz) + Textbereich."""
+        """Trefferfläche = gesamte Bogenfläche (bis zur Bauteilachse) + Text.
+
+        Nur die Bogenlinie selbst wäre kaum treffbar — der Bereich zwischen
+        Bauteil und Bogen gehört sichtbar zur Annotation und muss klickbar
+        sein (Rechtsklick/Auswahl).
+        """
         m = self._mirror()
-        base = -ARC_BASE_OFFSET
+        base = -self.base_offset
         path = QPainterPath()
-        path.moveTo(m * -ARC_HALF_WIDTH, base)
+        path.moveTo(m * -ARC_HALF_WIDTH, 0.0)
+        path.lineTo(m * -ARC_HALF_WIDTH, base)
         path.quadTo(0.0, base - ARC_HEIGHT * 2, m * ARC_HALF_WIDTH, base)
-        stroker = QPainterPathStroker()
-        stroker.setWidth(16)
-        return stroker.createStroke(path).united(self._text_hit_path())
+        path.lineTo(m * ARC_HALF_WIDTH, 0.0)
+        path.closeSubpath()
+        rotated = QTransform().rotate(self.angle_deg).map(path)
+        return rotated.united(self._text_hit_path())
 
     def text_anchor(self):
-        return QPointF(0, -(ARC_BASE_OFFSET + ARC_HEIGHT) - 14)
+        # Werttext aussen am Bogenscheitel (Scheitel = base + ARC_HEIGHT),
+        # mit festem Abstand von der Textkante statt von der Textmitte —
+        # breite Werte («230 V») ragen sonst seitlich in den Bogen.
+        rect = self.text_item.boundingRect()
+        direction = self._rotated(QPointF(0.0, -1.0))
+        horizontal = abs(direction.x()) > abs(direction.y())
+        half = rect.width() / 2.0 if horizontal else rect.height() / 2.0
+        distance = self.base_offset + ARC_HEIGHT + TEXT_GAP + half
+        return QPointF(round(direction.x()) * distance, round(direction.y()) * distance)
 
     def paint(self, painter, option, widget):
         self._paint_selection_hint(painter, option)
@@ -209,8 +380,10 @@ class VoltageAnnotation(BaseAnnotation):
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
+        painter.save()
+        painter.rotate(self.angle_deg)
         path = QPainterPath()
-        base = -ARC_BASE_OFFSET
+        base = -self.base_offset
         m = self._mirror()
         path.moveTo(m * -ARC_HALF_WIDTH, base)
         path.quadTo(0.0, base - ARC_HEIGHT * 2, m * ARC_HALF_WIDTH, base)
@@ -231,14 +404,25 @@ class VoltageAnnotation(BaseAnnotation):
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(VOLTAGE_COLOR))
             painter.drawPolygon(QPolygonF([end, wing1, wing2]))
+        painter.restore()
 
     def _extend_context_menu(self, menu):
-        flip = QAction("Richtung drehen", None)
+        # Aktionen gehören dem Menü: ohne Eltern-Objekt räumt Python sie beim
+        # Verlassen dieser Methode ab und sie fehlen im Menü (war der Fall).
+        flip = QAction("Richtung umkehren\tU", menu)
         flip.triggered.connect(self._flip_direction)
         menu.addAction(flip)
+        rotate = QAction("Bogen drehen (90°)\tR", menu)
+        rotate.triggered.connect(self._rotate_step)
+        menu.addAction(rotate)
 
-    def _flip_direction(self):
+    def _flip_direction(self, checked=False):
         self._request_undo()
+        self.reverse()
+
+    def reverse(self):
+        """Messrichtung umkehren: Pfeilspitze ans andere Bogenende
+        (ohne Undo-Schritt)."""
         self.set_flipped(not self.flipped)
 
     def to_dict(self):
@@ -247,6 +431,11 @@ class VoltageAnnotation(BaseAnnotation):
                 "value": self.value}
         if self.flipped:
             data["flip"] = True
+        if self.angle_deg:
+            data["angle"] = round(self.angle_deg, 1)
+        offset = self._text_offset_dict()
+        if offset:
+            data["text_offset"] = offset
         return data
 
 
@@ -270,6 +459,7 @@ class CurrentAnnotation(BaseAnnotation):
     def set_angle(self, angle):
         self.angle_deg = float(angle) % 360.0
         self.prepareGeometryChange()
+        self._update_text()   # Textanker hängt von der Pfeilrichtung ab
         self.update()
 
     def _triangle_points(self):
@@ -301,17 +491,25 @@ class CurrentAnnotation(BaseAnnotation):
         return rect.united(text_rect)
 
     def shape(self):
-        """Trefferfläche = Pfeildreieck + Textbereich."""
+        """Trefferfläche = Pfeildreieck (mit Griff-Toleranz) + Textbereich."""
         path = QPainterPath()
         path.addPolygon(QPolygonF([self._rotated(p) for p in self._triangle_points()]))
         path.closeSubpath()
-        return path.united(self._text_hit_path())
+        stroker = QPainterPathStroker()
+        stroker.setWidth(8)
+        return stroker.createStroke(path).united(path).united(self._text_hit_path())
 
     def text_anchor(self):
-        # Text leicht oberhalb des Pfeils, senkrecht zur Pfeilrichtung.
+        # Feste Seite unabhängig von der Pfeilrichtung (Richtung drehen lässt
+        # den Wert stehen): über waagrechten, rechts neben senkrechten
+        # Leitungen — mit Kantenabstand, damit breite Werte nie die Leitung
+        # oder den Pfeil schneiden.
         rad = math.radians(self.angle_deg)
-        offset = QPointF(-math.sin(rad) * 18, -math.cos(rad) * 18)
-        return offset
+        rect = self.text_item.boundingRect()
+        clearance = TRIANGLE_SIZE * 0.7 + TEXT_GAP
+        if abs(math.cos(rad)) >= abs(math.sin(rad)):
+            return QPointF(0.0, -(clearance + rect.height() / 2.0))
+        return QPointF(clearance + rect.width() / 2.0, 0.0)
 
     def paint(self, painter, option, widget):
         self._paint_selection_hint(painter, option)
@@ -321,12 +519,16 @@ class CurrentAnnotation(BaseAnnotation):
         painter.drawPolygon(polygon)
 
     def _extend_context_menu(self, menu):
-        flip = QAction("Richtung drehen", None)
+        flip = QAction("Richtung umkehren\tU", menu)
         flip.triggered.connect(self._flip_direction)
         menu.addAction(flip)
 
-    def _flip_direction(self):
+    def _flip_direction(self, checked=False):
         self._request_undo()
+        self.reverse()
+
+    def reverse(self):
+        """Pfeil umkehren (ohne Undo — der Aufrufer legt den Schritt ab)."""
         self.set_angle(self.angle_deg + 180.0)
 
     def to_dict(self):
@@ -340,6 +542,10 @@ class CurrentAnnotation(BaseAnnotation):
             scene_pos = parent.pos() + QPointF(self.x(), self.y())
         else:
             scene_pos = QPointF(self.x(), self.y())
-        return {"type": self.ANNOTATION_TYPE,
+        data = {"type": self.ANNOTATION_TYPE,
                 "x": float(scene_pos.x()), "y": float(scene_pos.y()),
                 "angle": self.angle_deg, "value": self.value}
+        offset = self._text_offset_dict()
+        if offset:
+            data["text_offset"] = offset
+        return data

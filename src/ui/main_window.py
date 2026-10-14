@@ -67,6 +67,12 @@ class MainWindow(QMainWindow):
         self.undo_stack = []
         self.redo_stack = []
 
+        # Benutzer-Vorlieben (dauerhaft): Auto-Nummerierung, Rasterdarstellung
+        from PyQt5.QtCore import QSettings
+        settings = QSettings()
+        self.auto_numbering = str(settings.value("autoNumbering", True)).lower() != "false"
+        self._grid_dots_pref = str(settings.value("gridStyle", "dots")) != "lines"
+
         self.setup_ui()
         self.create_menus()
         self.create_toolbar()
@@ -102,6 +108,7 @@ class MainWindow(QMainWindow):
 
         # Zeichenfläche (Mitte)
         self.canvas = GridCanvas(grid_size=20)
+        self.canvas.set_grid_style("dots" if self._grid_dots_pref else "lines")
 
         # Event-Handler für Scene-Events (nicht überschreiben, sondern erweitern)
         original_mouse_press = self.canvas.scene.mousePressEvent
@@ -186,6 +193,7 @@ class MainWindow(QMainWindow):
         save_action.setShortcut(QKeySequence.Save)
         save_action.triggered.connect(self.save_file)
         file_menu.addAction(save_action)
+        self.new_action, self.open_action, self.save_action = new_action, open_action, save_action
 
         file_menu.addSeparator()
 
@@ -228,8 +236,10 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(undo_action)
 
         redo_action = QAction("&Wiederherstellen", self)
-        redo_action.setShortcut(QKeySequence.Redo)
+        redo_action.setShortcuts([QKeySequence.Redo, QKeySequence("Ctrl+Y")])
+        redo_action.triggered.connect(self.redo)
         edit_menu.addAction(redo_action)
+        self.undo_action, self.redo_action = undo_action, redo_action
 
         edit_menu.addSeparator()
 
@@ -250,13 +260,74 @@ class MainWindow(QMainWindow):
 
         edit_menu.addSeparator()
 
+        rotate_action = QAction("D&rehen (90°)", self)
+        rotate_action.setShortcut(QKeySequence("R"))
+        rotate_action.triggered.connect(self.rotate_selection_or_preview)
+        edit_menu.addAction(rotate_action)
+
+        reverse_action = QAction("Richtung &umkehren", self)
+        reverse_action.setShortcut(QKeySequence("U"))
+        reverse_action.triggered.connect(self.reverse_selected)
+        edit_menu.addAction(reverse_action)
+        self.reverse_action = reverse_action
+
+        select_all_action = QAction("Alles &auswählen", self)
+        select_all_action.setShortcut(QKeySequence.SelectAll)
+        select_all_action.triggered.connect(self.select_all)
+        edit_menu.addAction(select_all_action)
+
+        edit_menu.addSeparator()
+
         delete_action = QAction("&Löschen", self)
         delete_action.setShortcut(QKeySequence.Delete)
         delete_action.triggered.connect(self.delete_selected)
         edit_menu.addAction(delete_action)
 
+        edit_menu.addSeparator()
+        self.auto_number_action = QAction("Automatisch &nummerieren", self)
+        self.auto_number_action.setCheckable(True)
+        self.auto_number_action.setChecked(self.auto_numbering)
+        self.auto_number_action.setToolTip("Neue Bauteile erhalten R1, R2, C1 … (kleinste freie Nummer)")
+        self.auto_number_action.toggled.connect(self._set_auto_numbering)
+        edit_menu.addAction(self.auto_number_action)
+        renumber_action = QAction("Alle neu nummer&ieren", self)
+        renumber_action.triggered.connect(self.renumber_all)
+        edit_menu.addAction(renumber_action)
+        edit_menu.addSeparator()
+
+        clear_action = QAction("Alles l&öschen…", self)
+        clear_action.triggered.connect(self.clear_canvas)
+        edit_menu.addAction(clear_action)
+        self.rotate_action, self.delete_action = rotate_action, delete_action
+
         # Ansicht-Menü
         view_menu = menubar.addMenu("&Ansicht")
+        zoom_in_action = QAction("Ver&grössern", self)
+        zoom_in_action.setShortcuts([QKeySequence.ZoomIn, QKeySequence("Ctrl+=")])
+        zoom_in_action.triggered.connect(self.canvas.zoom_in)
+        view_menu.addAction(zoom_in_action)
+        zoom_out_action = QAction("Ver&kleinern", self)
+        zoom_out_action.setShortcut(QKeySequence.ZoomOut)
+        zoom_out_action.triggered.connect(self.canvas.zoom_out)
+        view_menu.addAction(zoom_out_action)
+        zoom_reset_action = QAction("&100 %", self)
+        zoom_reset_action.setShortcut(QKeySequence("Ctrl+0"))
+        zoom_reset_action.triggered.connect(self.canvas.zoom_reset)
+        view_menu.addAction(zoom_reset_action)
+        zoom_fit_action = QAction("&Einpassen", self)
+        zoom_fit_action.setShortcut(QKeySequence(Qt.Key_Home))
+        zoom_fit_action.triggered.connect(self.zoom_to_content)
+        view_menu.addAction(zoom_fit_action)
+        self.zoom_in_action, self.zoom_out_action = zoom_in_action, zoom_out_action
+        self.zoom_fit_action = zoom_fit_action
+        view_menu.addSeparator()
+        self.dot_grid_action = QAction("&Punktraster", self)
+        self.dot_grid_action.setCheckable(True)
+        self.dot_grid_action.setChecked(self.canvas.grid_style == "dots")
+        self.dot_grid_action.setToolTip("Raster als Punkte (aus = Linienraster)")
+        self.dot_grid_action.toggled.connect(self._set_dot_grid)
+        view_menu.addAction(self.dot_grid_action)
+        view_menu.addSeparator()
         self.sheet_toggle_action = QAction("A4-&Blattrahmen", self)
         self.sheet_toggle_action.setCheckable(True)
         self.sheet_toggle_action.setChecked(self.sheet_meta.get("visible", False))
@@ -300,14 +371,47 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
     def create_toolbar(self):
-        """Toolbar mit häufigen Aktionen erstellen"""
+        """Werkzeugleiste: Datei, Bearbeiten, Ansicht + Simulation als Icons.
+
+        Die Aktionen sind dieselben wie im Menü (gleiche Kürzel); die
+        Tooltips nennen das Kürzel. «Alles löschen» liegt bewusst nur im
+        Menü — in der Leiste war es zu leicht versehentlich erreichbar.
+        """
+        from PyQt5.QtCore import QSize
+        from .icons import icon
+
         toolbar = QToolBar("Haupt-Toolbar")
+        toolbar.setObjectName("main_toolbar")
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(22, 22))
+        toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        toolbar.setStyleSheet(
+            "QToolBar { spacing: 2px; padding: 3px; border-bottom: 1px solid #d5d9e0; }"
+            "QToolButton { padding: 3px; border-radius: 4px; }"
+            "QToolButton:hover { background: #eaf2fc; }"
+            "QToolButton:checked { background: #d6e6f8; }")
         self.addToolBar(toolbar)
 
-        # Hinweis-Label
-        info_label = QLabel("Tipp: Rechtsklick auf Bauteil für Optionen")
-        info_label.setStyleSheet("padding: 5px; color: #666;")
-        toolbar.addWidget(info_label)
+        def add(action, icon_name, label):
+            action.setIcon(icon(icon_name))
+            shortcut = action.shortcut().toString(QKeySequence.NativeText)
+            action.setToolTip(f"{label} ({shortcut})" if shortcut else label)
+            toolbar.addAction(action)
+
+        add(self.new_action, "new", "Neu")
+        add(self.open_action, "open", "Öffnen")
+        add(self.save_action, "save", "Speichern")
+        toolbar.addSeparator()
+        add(self.undo_action, "undo", "Rückgängig")
+        add(self.redo_action, "redo", "Wiederherstellen")
+        toolbar.addSeparator()
+        add(self.rotate_action, "rotate", "Drehen um 90°")
+        add(self.reverse_action, "reverse", "Richtung umkehren (Spannungsbogen/Strompfeil)")
+        add(self.delete_action, "delete", "Löschen")
+        toolbar.addSeparator()
+        add(self.zoom_in_action, "zoom_in", "Vergrössern")
+        add(self.zoom_out_action, "zoom_out", "Verkleinern")
+        add(self.zoom_fit_action, "zoom_fit", "Alles einpassen")
 
         toolbar.addSeparator()
 
@@ -339,19 +443,20 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # Raster ein-/ausblenden Checkbox
-        self.grid_checkbox = QCheckBox("Raster anzeigen")
+        # Raster ein-/ausblenden (Checkbox bleibt die Zustandsquelle)
+        self.grid_checkbox = QCheckBox("Raster")
+        self.grid_checkbox.setToolTip("Raster anzeigen")
         self.grid_checkbox.setChecked(True)
         self.grid_checkbox.stateChanged.connect(self.toggle_grid)
         toolbar.addWidget(self.grid_checkbox)
 
         toolbar.addSeparator()
         color_label = QLabel("Linienfarbe:")
-        color_label.setStyleSheet("padding-left: 6px;")
+        color_label.setStyleSheet("padding-left: 6px; padding-right: 4px;")
         toolbar.addWidget(color_label)
 
         self.wire_color_combo = QComboBox()
-        self.wire_color_combo.setToolTip("Farbe fuer neue Leitungen; wirkt auch auf ausgewaehlte Leitungen.")
+        self.wire_color_combo.setToolTip("Farbe für neue Leitungen; wirkt auch auf ausgewählte Leitungen.")
         for name, rgb in WIRE_COLOR_PRESETS:
             rgb_tuple = self._coerce_rgb(rgb)
             self.wire_color_combo.addItem(name, rgb_tuple)
@@ -363,30 +468,83 @@ class MainWindow(QMainWindow):
             self.wire_color_combo.setCurrentIndex(initial_index)
         toolbar.addWidget(self.wire_color_combo)
 
-        toolbar.addSeparator()
+        # Statusleiste: Cursor-Position und Zoomstufe dauerhaft rechts
+        self.coord_label = QLabel("")
+        self.coord_label.setMinimumWidth(130)
+        self.coord_label.setStyleSheet("color: #555; padding: 0 8px;")
+        self.zoom_label = QLabel("100 %")
+        self.zoom_label.setMinimumWidth(60)
+        self.zoom_label.setStyleSheet("color: #555; padding: 0 8px;")
+        self.statusBar().addPermanentWidget(self.coord_label)
+        self.statusBar().addPermanentWidget(self.zoom_label)
+        self.canvas.zoom_changed.connect(
+            lambda factor: self.zoom_label.setText(f"{factor * 100:.0f} %"))
 
-        # Zoom-Buttons
-        zoom_in_btn = QPushButton("🔍+")
-        zoom_in_btn.setToolTip("Hineinzoomen")
-        zoom_in_btn.clicked.connect(self.canvas.zoom_in)
-        toolbar.addWidget(zoom_in_btn)
+    # ------------------------------------------------------------------
+    # Ansicht / Bearbeiten-Helfer
+    # ------------------------------------------------------------------
+    def zoom_to_content(self, checked=False):
+        """Alle Bauteile und Leitungen (bzw. das A4-Blatt) einpassen."""
+        rect = self._content_bounds()
+        if not rect.isNull():
+            rect = rect.adjusted(-40, -40, 40, 40)
+        self.canvas.zoom_to_rect(rect)
 
-        zoom_out_btn = QPushButton("🔍-")
-        zoom_out_btn.setToolTip("Herauszoomen")
-        zoom_out_btn.clicked.connect(self.canvas.zoom_out)
-        toolbar.addWidget(zoom_out_btn)
+    def select_all(self, checked=False):
+        self.activate_select_mode()
+        for item in self.canvas.scene.items():
+            if isinstance(item, (SymbolComponent, Wire)) and item is not self.preview_component:
+                item.setSelected(True)
 
-        zoom_reset_btn = QPushButton("100%")
-        zoom_reset_btn.setToolTip("Zoom zurücksetzen")
-        zoom_reset_btn.clicked.connect(self.canvas.zoom_reset)
-        toolbar.addWidget(zoom_reset_btn)
+    def rotate_selection_or_preview(self, checked=False):
+        """R: beim Platzieren die Vorschau drehen, sonst die Auswahl.
 
-        toolbar.addSeparator()
+        Ausgewählte Messwerte drehen mit: der Spannungsbogen um 90°, der
+        Strompfeil kehrt um (er liegt immer auf seiner Leitung).
+        """
+        if (self.preview_component is not None
+                and self.selected_component_type
+                and self.selected_component_type not in ("wire", "select", "voltage", "current")):
+            self.rotate_preview()
+            return
+        selected = self.canvas.scene.selectedItems()
+        # Bogen eines ebenfalls ausgewählten Bauteils dreht über das Bauteil
+        # mit — nicht zusätzlich selbst (sonst doppelte Drehung).
+        annotations = [i for i in selected
+                       if getattr(i, "is_annotation", False)
+                       and not (i.parentItem() in selected
+                                and hasattr(i.parentItem(), "rotate_component"))]
+        for annotation in annotations:
+            if hasattr(annotation, "rotate_quarter"):
+                annotation.rotate_quarter()
+            elif hasattr(annotation, "reverse"):
+                annotation.reverse()
+        components = [i for i in self.canvas.scene.selectedItems()
+                      if hasattr(i, "rotate_component")]
+        if components:
+            self.rotate_selected()      # legt selbst den Undo-Schritt ab
+        elif annotations:
+            self._push_undo_snapshot()
 
-        # Alles löschen Button
-        clear_btn = QPushButton("Alles löschen")
-        clear_btn.clicked.connect(self.clear_canvas)
-        toolbar.addWidget(clear_btn)
+    def reverse_selected(self, checked=False):
+        """U: Messrichtung der ausgewählten Spannungsbögen und Strompfeile
+        umkehren (ein Undo-Schritt für alle)."""
+        targets = [i for i in self.canvas.scene.selectedItems()
+                   if getattr(i, "is_annotation", False) and hasattr(i, "reverse")]
+        if not targets:
+            self.statusBar().showMessage(
+                "Richtung umkehren: zuerst einen Spannungsbogen oder Strompfeil auswählen.")
+            return
+        for annotation in targets:
+            annotation.reverse()
+        self._push_undo_snapshot()
+        self.statusBar().showMessage(f"Richtung umgekehrt ({len(targets)} Messwert(e)).")
+
+    def _update_cursor_label(self, scene_pos):
+        label = getattr(self, "coord_label", None)
+        if label is not None:
+            grid = self.canvas.grid_size
+            label.setText(f"X {scene_pos.x() / grid:.1f}  Y {scene_pos.y() / grid:.1f}  (Raster)")
 
     def show_symbol_editor(self):
         """Symbol-Editor als separates Werkzeug öffnen"""
@@ -527,6 +685,9 @@ class MainWindow(QMainWindow):
     def on_component_selected(self, component_type):
         """Bauteilauswahl von Toolbar verarbeiten"""
         self.selected_component_type = component_type
+        toolbar = getattr(self, "component_toolbar", None)
+        if toolbar is not None and hasattr(toolbar, "set_active"):
+            toolbar.set_active(component_type)
         self.preview_orientation = "horizontal"
         self.preview_rotation_step = 0
 
@@ -637,6 +798,7 @@ class MainWindow(QMainWindow):
                 )
                 if component:
                     self.canvas.scene.addItem(component)
+                    self._auto_designate(component)
                     # Falls das Bauteil Pole hat und nicht das
                     # Durchführungs-Symbol 'Strom' ist: bestehende Leitungen,
                     # die durch den Platzierungspunkt verlaufen, an den Polen
@@ -684,6 +846,7 @@ class MainWindow(QMainWindow):
 
         pos = event.scenePos()
         snapped_pos = self.canvas.snap_to_grid(pos)
+        self._update_cursor_label(snapped_pos)
 
         if self.drawing_wire and self.temp_wire:
             # Leitung-Vorschau aktualisieren
@@ -705,6 +868,8 @@ class MainWindow(QMainWindow):
                 self.preview_component.setFlag(QGraphicsItem.ItemIsMovable, False)
                 self.preview_component.setFlag(QGraphicsItem.ItemIsSelectable, False)
                 self.canvas.scene.addItem(self.preview_component)
+                # Vorschau zeigt schon die Kennzeichnung, die es geben wird
+                self._auto_designate(self.preview_component)
 
     def canvas_mouse_release(self, event):
         """Mausloslassen auf Zeichenfläche verarbeiten"""
@@ -742,7 +907,7 @@ class MainWindow(QMainWindow):
         menu = QMenu()
 
         # Drehen
-        rotate_action = QAction("Drehen (90°)", None)
+        rotate_action = QAction("Drehen (90°)", menu)
         rotate_action.triggered.connect(lambda: self.rotate_preview())
         menu.addAction(rotate_action)
 
@@ -769,6 +934,100 @@ class MainWindow(QMainWindow):
             f"{display_name}-Vorschau auf {self.preview_rotation_step * 90}° eingestellt "
             f"– Linksklick zum Platzieren"
         )
+
+    # ------------------------------------------------------------------
+    # Automatische Betriebsmittel-Kennzeichnung (R1, R2, C1 …)
+    # ------------------------------------------------------------------
+    def _designator_prefix(self, component):
+        """Kennbuchstabe aus dem Standardnamen des Symbols (z. B. «R»).
+
+        Kein Präfix für Symbole ohne Namensfeld und für Einpol-Symbole wie
+        Erde («PE» ist eine feste Bezeichnung, kein Zähler).
+        """
+        if "name" not in getattr(component, "placeholder_items", {}):
+            return ""
+        prefix = (component.definition.default_values.get("name") or "").strip()
+        if not prefix or len(component.get_pole_points()) < 2:
+            return ""
+        return prefix
+
+    def _used_designator_numbers(self, prefix, exclude):
+        import re
+        pattern = re.compile(r"^" + re.escape(prefix) + r"(\d+)$")
+        used = set()
+        for item in self.canvas.scene.items():
+            if (not isinstance(item, SymbolComponent) or item is exclude
+                    or item is self.preview_component):
+                continue
+            match = pattern.match(item.placeholder_values.get("name", "").strip())
+            if match:
+                used.add(int(match.group(1)))
+        return used
+
+    def _auto_designate(self, component, only_if_taken=False):
+        """Kleinste freie Nummer vergeben (nach Löschen von R2 wird R2 neu
+        vergeben). `only_if_taken`: nur umbenennen, wenn der Name schon
+        existiert (Einfügen/Duplizieren behält eindeutige Namen)."""
+        if not getattr(self, "auto_numbering", True) or component is None:
+            return
+        prefix = self._designator_prefix(component)
+        if not prefix:
+            return
+        used = self._used_designator_numbers(prefix, exclude=component)
+        if only_if_taken:
+            import re
+            current = component.placeholder_values.get("name", "").strip()
+            match = re.match(r"^" + re.escape(prefix) + r"(\d+)$", current)
+            if not match or int(match.group(1)) not in used:
+                return
+        number = 1
+        while number in used:
+            number += 1
+        component.set_placeholder_value("name", f"{prefix}{number}")
+
+    def _set_auto_numbering(self, enabled):
+        self.auto_numbering = bool(enabled)
+        try:
+            from PyQt5.QtCore import QSettings
+            QSettings().setValue("autoNumbering", self.auto_numbering)
+        except Exception:
+            pass
+
+    def _set_dot_grid(self, enabled):
+        style = "dots" if enabled else "lines"
+        self.canvas.set_grid_style(style)
+        try:
+            from PyQt5.QtCore import QSettings
+            QSettings().setValue("gridStyle", style)
+        except Exception:
+            pass
+
+    def renumber_all(self, checked=False):
+        """Alle Kennzeichnungen je Kennbuchstabe lückenlos neu vergeben —
+        in Leserichtung (Zeilen von oben nach unten, darin links nach rechts).
+        Frei vergebene Namen (z. B. «Rv») bleiben unangetastet."""
+        import re
+        groups = {}
+        for item in self.canvas.scene.items():
+            if not isinstance(item, SymbolComponent) or item is self.preview_component:
+                continue
+            prefix = self._designator_prefix(item)
+            name = item.placeholder_values.get("name", "").strip()
+            if prefix and (name == prefix or re.match(r"^" + re.escape(prefix) + r"\d+$", name)):
+                groups.setdefault(prefix, []).append(item)
+        row = self.canvas.grid_size * 4   # Bauteile innerhalb ~4 Raster = gleiche Zeile
+        changed = 0
+        for prefix, items in groups.items():
+            items.sort(key=lambda c: (round(c.sceneBoundingRect().center().y() / row),
+                                      c.sceneBoundingRect().center().x()))
+            for number, item in enumerate(items, start=1):
+                new_name = f"{prefix}{number}"
+                if item.placeholder_values.get("name") != new_name:
+                    item.set_placeholder_value("name", new_name)
+                    changed += 1
+        if changed:
+            self._push_undo_snapshot()
+        self.statusBar().showMessage(f"Neu nummeriert: {changed} Kennzeichnung(en) geändert.")
 
     def create_component(self, component_type, x, y, orientation="horizontal", rotation_step=0):
         """Bauteil basierend auf Symboldefinition erstellen"""
@@ -819,21 +1078,31 @@ class MainWindow(QMainWindow):
                     "Kein Bauteil an dieser Stelle – auf ein Bauteil klicken."
                 )
                 return
-            annotation = VoltageAnnotation(component, "U")
-            # Bogen immer über der Bauteilmitte (Pol-Mittelpunkt) setzen,
-            # nicht an der Klickstelle — sonst sitzt er auf dem Ursprung
-            # (linker Pol) auf.
             poles = component.get_pole_points()
+            # Auto-Ausrichtung: Bei vertikal stehenden Polen den Bogen
+            # seitlich spannen. Lokal 270° ergibt bei Schritt 1 links, bei
+            # Schritt 3 (Qt +180°) rechts — dieselbe Lage wie nach Drehen.
+            vertical = False
+            annotation = VoltageAnnotation(component, "U")
             if len(poles) == 2:
                 mid = QPointF((poles[0].x() + poles[1].x()) / 2.0,
                               (poles[0].y() + poles[1].y()) / 2.0)
+                vertical = (abs(poles[1].y() - poles[0].y())
+                            > abs(poles[1].x() - poles[0].x()))
+                if vertical:
+                    annotation.set_angle(270.0)
                 annotation.setPos(component.mapFromScene(mid))
             component.annotations.append(annotation)
             self._push_undo_snapshot()
             annotation.edit_value()
-            self.statusBar().showMessage(
-                "Spannungsbogen platziert – Doppelklick ändert den Wert, Ziehen verschiebt."
-            )
+            if vertical:
+                self.statusBar().showMessage(
+                    "Spannungsbogen seitlich platziert (passend zum vertikalen "
+                    "Bauteil) – Doppelklick ändert den Wert, Rechtsklick dreht.")
+            else:
+                self.statusBar().showMessage(
+                    "Spannungsbogen platziert – Doppelklick ändert den Wert, "
+                    "Rechtsklick dreht/kehrt die Richtung.")
         elif self.selected_component_type == "current":
             wire = self._wire_at(scene_pos)
             if wire is None:
@@ -1249,14 +1518,18 @@ class MainWindow(QMainWindow):
         # Messwert-Annotationen wiederherstellen (Ziel über Index)
         for ann in data.get("annotations", []):
             ann_type = ann.get("type")
+            offset = ann.get("text_offset")
             if ann_type == "voltage":
                 index = ann.get("component", -1)
                 target = created_components[index] if 0 <= index < len(created_components) else None
                 if target is None:
                     continue
                 annotation = VoltageAnnotation(
-                    target, ann.get("value", "U"), flipped=ann.get("flip", False))
+                    target, ann.get("value", "U"), flipped=ann.get("flip", False),
+                    angle=ann.get("angle", 0.0))
                 annotation.setPos(ann.get("x", 0), ann.get("y", 0))
+                if offset:
+                    annotation.set_text_offset(offset[0], offset[1])
                 target.annotations.append(annotation)
             elif ann_type == "current":
                 index = ann.get("wire", -1)
@@ -1269,6 +1542,8 @@ class MainWindow(QMainWindow):
                 # Teil des Snapshots) → zurück in Eltern-Koordinaten wandeln.
                 annotation.setPos(target.mapFromScene(
                     QPointF(ann.get("x", 0), ann.get("y", 0))))
+                if offset:
+                    annotation.set_text_offset(offset[0], offset[1])
                 target.annotations.append(annotation)
             elif ann_type == "contact_mirror":
                 mirror = ContactMirrorItem(
@@ -1419,8 +1694,12 @@ class MainWindow(QMainWindow):
                 if target is None:
                     continue
                 annotation = VoltageAnnotation(target, ann.get("value", "U"),
-                                               flipped=ann.get("flip", False))
+                                               flipped=ann.get("flip", False),
+                                               angle=ann.get("angle", 0.0))
                 annotation.setPos(ann.get("x", 0), ann.get("y", 0))
+                paste_offset = ann.get("text_offset")
+                if paste_offset:
+                    annotation.set_text_offset(paste_offset[0], paste_offset[1])
                 target.annotations.append(annotation)
             elif ann.get("type") == "current":
                 target = (new_wires[ann["wire"]]
@@ -1431,7 +1710,13 @@ class MainWindow(QMainWindow):
                                                ann.get("angle", 0))
                 annotation.setPos(target.mapFromScene(
                     QPointF(ann.get("x", 0) + dx, ann.get("y", 0) + dy)))
+                paste_offset = ann.get("text_offset")
+                if paste_offset:
+                    annotation.set_text_offset(paste_offset[0], paste_offset[1])
                 target.annotations.append(annotation)
+        # Kopien bekommen eindeutige Kennzeichnungen (R1 -> nächstes freies R)
+        for comp in new_components:
+            self._auto_designate(comp, only_if_taken=True)
         self.canvas.scene.clearSelection()
         for item in new_components + new_wires:
             item.setSelected(True)
@@ -1489,6 +1774,10 @@ class MainWindow(QMainWindow):
     def _content_bounds(self):
         rect = QRectF()
         for item in self.canvas.scene.items():
+            # Platzierungs-Vorschau und ausgeblendeter Blattrahmen sind kein
+            # Inhalt (verfälschten Einpassen und Druckbereich).
+            if item is self.preview_component or not item.isVisible():
+                continue
             if getattr(item, "is_decoration", False) or getattr(item, "is_handle", False):
                 if item is not self.sheet_frame:
                     continue
@@ -1938,25 +2227,27 @@ class MainWindow(QMainWindow):
     def undo(self):
         """Letzte Aktion rückgängig machen.
 
-        Der undo_stack speichert nach jeder Änderung den neuen Zustand. Das
-        oberste Element ist also der aktuelle Zustand; es wandert auf den
-        redo_stack. Das dann oberste Element ist der Zielzustand.
+        Der undo_stack speichert Zustände. Manche Aktionen legen den Zustand
+        nach, andere vor der Änderung ab — daher werden oben liegende Einträge,
+        die dem Ist-Zustand gleichen, übersprungen; der nächste abweichende
+        Eintrag ist das Ziel (und bleibt als neuer Ist-Zustand oben liegen).
         """
-        if len(self.undo_stack) < 1:
+        current = self._capture_snapshot()
+        while self.undo_stack and self.undo_stack[-1] == current:
+            self.undo_stack.pop()
+        empty = {"version": "1.0", "components": [], "wires": [], "annotations": []}
+        if not self.undo_stack and not current.get("components") and not current.get("wires"):
             self.statusBar().showMessage("Nichts zum Rückgängigmachen.")
             return
-        # Aktuellen Zustand für späteres Redo sichern.
-        self.redo_stack.append(self._capture_snapshot())
-        # Aktuellen (obersten) Eintrag verwerfen – er entspricht dem Ist-Zustand.
-        self.undo_stack.pop()
+        self.redo_stack.append(current)
         if self.undo_stack:
-            target = self.undo_stack[-1]
-            self._restore_snapshot(target)
+            self._restore_snapshot(self.undo_stack[-1])
             self.statusBar().showMessage("Rückgängig.")
         else:
             # Stack ist leer -> leerer Anfangszustand.
-            self._restore_snapshot({"version": "1.0", "components": [], "wires": []})
+            self._restore_snapshot(dict(empty, sheet=current.get("sheet", {})))
             self.statusBar().showMessage("Rückgängig (Anfangszustand).")
+        self._mark_dirty()
 
     def redo(self):
         """Zuletzt rückgängig gemachte Aktion wiederherstellen."""
@@ -2009,6 +2300,12 @@ class MainWindow(QMainWindow):
                 registry = getattr(parent, "annotations", None)
                 if registry is not None and item in registry:
                     registry.remove(item)
+                self.canvas.scene.removeItem(item)
+                # Beschriftung darf wieder auf die frei gewordene Seite.
+                relayout = getattr(parent, "_layout_labels", None)
+                if callable(relayout):
+                    relayout()
+                continue
             self.canvas.scene.removeItem(item)
 
     def toggle_grid(self, state):
@@ -2180,6 +2477,19 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Fehler", f"Speichern der Schaltung fehlgeschlagen: {str(e)}")
 
+    @staticmethod
+    def _ensure_extension(filename, suffix):
+        """Dateiendung ergänzen, falls der Speicherdialog keine geliefert hat.
+
+        Unter macOS hängt der native Dialog die Endung aus dem Filter NICHT
+        automatisch an — QImage.save() kann dann das Format nicht bestimmen
+        und schlägt fehl.
+        """
+        path = Path(filename)
+        if path.suffix.lower() != suffix.lower():
+            path = path.with_suffix(suffix)
+        return str(path)
+
     def export_png(self, filename=None, scale=2):
         """Zeichenfläche als PNG exportieren - nur sichtbarer Bereich.
 
@@ -2187,25 +2497,37 @@ class MainWindow(QMainWindow):
         filename-Parameter (GUI-Aufruf) fragt ein kleiner Dialog den
         Faktor ab; Tests können beides direkt übergeben.
         """
+        # Menü-Aktionen übergeben das checked-Flag (bool) als erstes Argument —
+        # das ist ein GUI-Aufruf, kein Dateiname (sonst nativer Absturz).
+        if isinstance(filename, bool):
+            filename = None
         if filename is None:
             filename, _ = QFileDialog.getSaveFileName(self, "Als PNG exportieren", "", "PNG Dateien (*.png)")
             if not filename:
                 return
+            filename = self._ensure_extension(filename, ".png")
             scale, ok = QInputDialog.getInt(
                 self, "Auflösung",
                 "Auflösungsfaktor (1 = Standard, 2 = doppelte Pixelzahl je Achse):",
                 2, 1, 8, 1)
             if not ok:
                 return
+        filename = self._ensure_extension(filename, ".png")
         try:
             # Nur den sichtbaren Bereich exportieren
             visible_rect = self.canvas.get_visible_scene_rect()
 
-            # Zielbild: sichtbarer Bereich mal Auflösungsfaktor
-            width = max(1, int(visible_rect.width() * scale))
-            height = max(1, int(visible_rect.height() * scale))
+            # Zielbild: sichtbarer Bereich mal Auflösungsfaktor; pro Seite
+            # maximal 8000 px (Speicherschutz bei weit herausgezoomtem Stand)
+            visible_w = max(1.0, visible_rect.width())
+            visible_h = max(1.0, visible_rect.height())
+            scale_applied = min(scale, 8000.0 / visible_w, 8000.0 / visible_h)
+            width = max(1, int(visible_w * scale_applied))
+            height = max(1, int(visible_h * scale_applied))
             image = QImage(width, height, QImage.Format_ARGB32)
             image.fill(Qt.white)
+            if image.isNull():
+                raise IOError(f"Zu grosses Bild ({width}x{height} px)")
 
             # Szene auf Bild rendern - nur sichtbarer Bereich, skaliert
             painter = QPainter(image)
@@ -2215,10 +2537,10 @@ class MainWindow(QMainWindow):
                 visible_rect)
             painter.end()
 
-            # Bild speichern (Rückgabe prüfen: stillscheitender Export wäre
-            # sonst ein «Erfolg» mit leerer Datei)
-            if not image.save(filename):
-                raise IOError("QImage.save() meldete False (Pfad beschreibbar?)")
+            # Bild speichern — Format explizit (endungslose Pfade scheitern
+            # sonst an der Formaterkennung), Rückgabe prüfen
+            if not image.save(filename, "PNG"):
+                raise IOError("PNG konnte nicht geschrieben werden (Pfad beschreibbar?)")
             if not hasattr(self, "_batch_export"):
                 QMessageBox.information(self, "Erfolg",
                     f"Als PNG erfolgreich exportiert!\n"
@@ -2257,10 +2579,15 @@ class MainWindow(QMainWindow):
         SVG-Modul (z. B. im gebündelten Build) nicht still eine leere Datei
         produziert.
         """
+        # Menü-Aktionen übergeben das checked-Flag (bool) als erstes Argument —
+        # das ist ein GUI-Aufruf, kein Dateiname (sonst nativer Absturz).
+        if isinstance(filename, bool):
+            filename = None
         if filename is None:
             filename, _ = QFileDialog.getSaveFileName(self, "Als SVG exportieren", "", "SVG Dateien (*.svg)")
             if not filename:
                 return
+        filename = self._ensure_extension(filename, ".svg")
         painter = None
         try:
             from PyQt5.QtSvg import QSvgGenerator
@@ -2288,6 +2615,11 @@ class MainWindow(QMainWindow):
             self.canvas.scene.render(painter, source=content_rect)
             painter.end()
             painter = None
+
+            # Ergebnis prüfen: leere Datei wäre ein stiller Fehlschlag
+            target_file = Path(filename)
+            if not target_file.exists() or target_file.stat().st_size == 0:
+                raise IOError("SVG-Datei wurde nicht geschrieben")
 
             QMessageBox.information(self, "Erfolg",
                 f"Als SVG erfolgreich exportiert!\n"

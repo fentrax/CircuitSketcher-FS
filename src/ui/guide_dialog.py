@@ -46,13 +46,17 @@ Andocken</b> am nächsten Bauteil-Anschluss.</p>
 <h3>Bauteile bearbeiten</h3>
 <ul>
 <li><b>Verschieben:</b> im Auswahlmodus ziehen (rastet am Raster ein).</li>
-<li><b>Drehen/Skalieren/Löschen:</b> Rechtsklick auf das Bauteil.</li>
+<li><b>Drehen:</b> Taste <b>R</b> (auch während des Platzierens) oder
+    Rechtsklick auf das Bauteil. Name und Wert ordnen sich dabei automatisch
+    neu an: immer ausserhalb des Symbols, gegenüber dem Spannungsbogen.</li>
+<li><b>Skalieren/Löschen:</b> Rechtsklick auf das Bauteil.</li>
 <li><b>Werte beschriften</b> (Name, Spannung, Strom, Widerstand): Doppelklick
     auf das Bauteil oder direkt auf einen Beschriftungstext.</li>
 <li><b>Beschriftung verschieben:</b> Bauteil auswählen – an jedem Text
 erscheint ein kleiner <b>Griffpunkt</b>. Text am Griffpunkt (oder direkt) mit
-gedrückter linker Maustaste ziehen – der Versatz bleibt erhalten (auch nach
-Drehen und Speichern). Solange das Bauteil <i>nicht</i> ausgewählt ist, fällt
+gedrückter linker Maustaste ziehen – der Versatz bleibt beim Speichern
+erhalten. Beim Drehen ordnen sich alle Beschriftungen neu an (ein alter
+Versatz würde nach dem Drehen in die falsche Richtung zeigen). Solange das Bauteil <i>nicht</i> ausgewählt ist, fällt
 der Klick durch den Text hindurch auf das Bauteil (auswählen/verschieben).</li>
 <li><b>Auswahlrahmen:</b> im Auswahlmodus mit gedrückter linker Maustaste
     aufziehen; mehrere Elemente mit <b>Entf</b> löschen.</li>
@@ -160,13 +164,33 @@ linken Palette</b>.</p>
 und innerhalb ihrer Gruppe neu einsortieren. Die Reihenfolge bleibt dauerhaft
 gespeichert.</p>
 
+<h3>Betriebsmittel-Kennzeichnung</h3>
+<p>Neue Bauteile werden automatisch nummeriert – mit der kleinsten freien
+Nummer ihres Kennbuchstabens nach <b>DIN EN 81346-2</b>:</p>
+<table cellpadding="3">
+<tr><td><b>G</b></td><td>Batterie (Energie erzeugen)</td></tr>
+<tr><td><b>R</b></td><td>Widerstand, Diode, Spule (begrenzen) – gemeinsamer Zähler</td></tr>
+<tr><td><b>C</b></td><td>Kondensator (speichern)</td></tr>
+<tr><td><b>E</b></td><td>Lampe (Licht bereitstellen)</td></tr>
+<tr><td><b>P</b></td><td>LED, Volt- und Amperemeter (Information darstellen)</td></tr>
+<tr><td><b>F</b> / <b>M</b> / <b>S</b></td><td>Sicherung / Motor / Schalter und Taster</td></tr>
+</table>
+<p>Kopien erhalten eine freie Nummer. <i>Bearbeiten → Alle neu nummerieren</i>
+vergibt die Nummern lückenlos in Leserichtung; <i>Bearbeiten → Automatisch
+nummerieren</i> schaltet die Funktion ab. Eigene Namen (z.&nbsp;B. «Rv»)
+bleiben unangetastet.</p>
+
 <h3>Tastenkürzel</h3>
 <table cellpadding="4">
 <tr><td><b>ESC</b></td><td>Auswahlmodus (bricht Werkzeug/Leitung ab)</td></tr>
 <tr><td><b>F1</b></td><td>Diese Anleitung</td></tr>
 <tr><td><b>Ctrl+Z / Ctrl+Y</b></td><td>Rückgängig / Wiederherstellen</td></tr>
 <tr><td><b>Ctrl+N / O / S</b></td><td>Neu / Öffnen / Speichern</td></tr>
+<tr><td><b>R</b></td><td>Auswahl bzw. Vorschau um 90° drehen</td></tr>
+<tr><td><b>Ctrl+A</b></td><td>Alles auswählen</td></tr>
 <tr><td><b>Entf</b></td><td>Auswahl löschen</td></tr>
+<tr><td><b>Ctrl+Plus / Ctrl+Minus</b></td><td>Vergrössern / Verkleinern (oder Mausrad)</td></tr>
+<tr><td><b>Ctrl+0 / Pos1</b></td><td>100 % / Alles einpassen</td></tr>
 </table>
 """
 

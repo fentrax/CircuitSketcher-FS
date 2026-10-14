@@ -4,7 +4,7 @@
   "name": "LED",
   "category": "Halbleiter",
   "default_values": {
-    "name": "LED"
+    "name": "P"
   },
   "orientations": {
     "horizontal": {
@@ -12,7 +12,7 @@
         {
           "type": "line",
           "start": [
-            -40.0,
+            -35.0,
             0.0
           ],
           "end": [
@@ -27,7 +27,7 @@
             0.0
           ],
           "end": [
-            40.0,
+            35.0,
             0.0
           ]
         },
@@ -164,7 +164,7 @@
           "key": "name",
           "position": [
             0.0,
-            -40.0
+            34.0
           ],
           "alignment": "center"
         }
@@ -186,7 +186,7 @@
         ],
         "max": [
           44,
-          26
+          40.0
         ]
       },
       "origin": [
@@ -200,7 +200,7 @@
           "type": "line",
           "start": [
             0.0,
-            -40.0
+            -35.0
           ],
           "end": [
             0.0,
@@ -215,7 +215,7 @@
           ],
           "end": [
             0.0,
-            40.0
+            35.0
           ]
         },
         {
